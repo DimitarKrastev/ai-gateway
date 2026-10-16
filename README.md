@@ -316,7 +316,7 @@ Notes:
   series at that moment.
 - **Context window (in use)** is drawn as overlapping areas from zero (each group's own area, largest behind; choose
   *Stacked* for the total). It shows, at every moment, the context each agent instance is holding: the context of its
-  latest request, kept until its next request or 60 s after its last response. Grouped by model, account, session,
+  latest request, kept until its next request or 5 minutes after its last response. Grouped by model, account, session,
   agent instance, etc., each group is the sum of its agents, so the stacked areas show how context grows in real time. Timeseries queries are limited to 20,000 buckets.
   For second-level detail pick the **5m** or **15m** range (auto bucket 5 s; **1h** gets 15 s) or a 5s/15s/30s bucket on
   the Analytics page.

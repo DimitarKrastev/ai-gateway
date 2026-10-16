@@ -354,8 +354,11 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
     /// Peak number of simultaneously in-flight requests (or distinct agents with an in-flight request) per bucket,
     /// from request start/end intervals plus requests still in flight.
     /// </summary>
-    /// <summary>An agent's context window counts until its next request, or this long after its last response.</summary>
-    public const long ContextIdleMs = 60_000;
+    /// <summary>
+    /// An agent's context window counts until its next request, or this long after its last response (an agent waiting on
+    /// a long tool run or on the user still holds its context; 5 minutes is also Anthropic's default prompt-cache lifetime).
+    /// </summary>
+    public const long ContextIdleMs = 300_000;
 
     /// <summary>
     /// Context window in use: at any moment each agent instance holds the context of its latest request (from that request's

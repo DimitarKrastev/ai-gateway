@@ -32,11 +32,11 @@ public class ContextWindowTests
         var store = gw.Services.GetRequiredService<UsageStore>();
         var t0 = DateTimeOffset.UtcNow.AddMinutes(-30).ToUnixTimeMilliseconds() / 1000 * 1000;
 
-        // Agent A: 1k context at 1 s, grows to 3k at 5 s. Agent B: 500 at 3 s. Then nothing for 2 minutes.
+        // Agent A: 1k context at 1 s, grows to 3k at 5 s. Agent B: 500 at 3 s. Then nothing for 6 minutes.
         store.Insert(Req("A", t0 + 1000, t0 + 2000, 1000));
         store.Insert(Req("B", t0 + 3000, t0 + 4000, 500));
         store.Insert(Req("A", t0 + 5000, t0 + 6000, 3000));
-        var range = $"from={t0}&to={t0 + 120_000}&bucket=1s&metric=contextWindow";
+        var range = $"from={t0}&to={t0 + 400_000}&bucket=1s&metric=contextWindow";
 
         var perAgent = await Series(admin, range + "&groupBy=agentId");
         var a = KeyOf(perAgent, "A");
@@ -46,8 +46,8 @@ public class ContextWindowTests
         Assert.Equal(1000, At(perAgent, a, t0 + 4000)); // held between requests
         Assert.Equal(3000, At(perAgent, a, t0 + 5000)); // replaced by the newer request
         Assert.Equal(500, At(perAgent, b, t0 + 3000));
-        Assert.Equal(500, At(perAgent, b, t0 + 63_000)); // still held 59 s after B's response...
-        Assert.Equal(0, At(perAgent, b, t0 + 65_000)); // ...and gone after the idle gap
+        Assert.Equal(500, At(perAgent, b, t0 + 303_000)); // still held 299 s after B's response...
+        Assert.Equal(0, At(perAgent, b, t0 + 305_000)); // ...and gone after the 5-minute idle gap
 
         var total = await Series(admin, range + "&groupBy=none");
         var key = total.GetProperty("series")[0].GetProperty("key").GetString()!;

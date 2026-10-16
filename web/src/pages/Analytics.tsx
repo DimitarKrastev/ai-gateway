@@ -354,6 +354,7 @@ export default function Analytics() {
             format={def.format}
             axisFormat={def.format === fmtTps ? fmtCompact : def.format}
             height={320}
+            legendTotals={def.kind === 'sum'}
           />
         ) : perAgent ? (
           <Async state={agentSeries}>

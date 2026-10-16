@@ -5,8 +5,8 @@ import { LIVE_WINDOWS, type LiveSeries } from '../liveWindows'
 
 /** Data for a second is complete just after it ends; drawing one second behind lets bars slide in from the right edge. */
 const DELAY_MS = 1000
-/** A per-request series (an agent) is drawn until this long after its last request, the gateway's "active" gap. */
-const IDLE_MS = 60_000
+/** A per-request series (an agent) is drawn until this long after its last request (as the context window metric). */
+const IDLE_MS = 300_000
 
 function niceMax(v: number) {
   if (v <= 0) return 1
@@ -32,6 +32,7 @@ export default function LiveChart({
   axisFormat = format,
   height = 300,
   emptyText = 'Waiting for traffic…',
+  legendTotals = false,
 }: {
   series: LiveSeries[]
   bucketMs: number | null
@@ -41,6 +42,8 @@ export default function LiveChart({
   axisFormat?: (v: number) => string
   height?: number
   emptyText?: string
+  /** Legend shows each series' total over the window (sums such as cost) instead of its latest value. */
+  legendTotals?: boolean
 }) {
   const { skew } = useMeter()
   const now = useNow(1000) - skew
@@ -202,8 +205,10 @@ export default function LiveChart({
     : []
   const readoutTotal = mode === 'stack' ? readout.reduce((sum, r) => sum + (r.v ?? 0), 0) : null
 
-  // Legend values: the latest bucket (bucketed) or each series' latest request (per request).
+  // Legend values: the window total (sums), else the latest bucket or each series' latest request (per request).
+  const windowStart = now - DELAY_MS - windowMs
   const latest = (s: LiveSeries) => {
+    if (legendTotals) return s.points.reduce((sum, [t, v]) => (t >= windowStart ? sum + v : sum), 0)
     const last = s.points[s.points.length - 1]
     if (!last) return null
     if (bucketMs !== null && last[0] + bucketMs < now - DELAY_MS - 2 * bucketMs) return mode === 'line' ? null : 0
