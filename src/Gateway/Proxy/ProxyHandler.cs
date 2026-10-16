@@ -1,8 +1,11 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Gateway.Accounts;
+using Gateway.Bridge;
 using Gateway.ClientKeys;
+using Gateway.Usage;
 using Microsoft.AspNetCore.Http.Features;
 
 namespace Gateway.Proxy;
@@ -11,6 +14,9 @@ namespace Gateway.Proxy;
 /// Transparent reverse proxy for <c>/anthropic/*</c> and <c>/openai/*</c>: authenticates the agent's gateway key, picks a
 /// linked account (sticky per session), swaps in that account's credentials and streams the upstream response back
 /// unchanged. On a 429 it fails over to another account if one is available.
+/// <para>Anthropic Messages requests for an OpenAI model exposed through the bridge (<see cref="BridgeModelCatalog"/>) take
+/// the same path — client key, session, account selection, credentials, failover, observers — but go to an OpenAI account
+/// as a translated Responses request, and the response is translated back (<see cref="BridgeResponseWriter"/>).</para>
 /// </summary>
 public sealed class ProxyHandler(
     IHttpClientFactory http,
@@ -18,6 +24,8 @@ public sealed class ProxyHandler(
     IAccountSelector selector,
     UpstreamRouter router,
     TokenRefresher refresher,
+    BridgeModelCatalog bridgeCatalog,
+    UsageStore usage,
     IEnumerable<IRequestObserver> observers,
     TimeProvider time,
     ILogger<ProxyHandler> log)
@@ -62,25 +70,76 @@ public sealed class ProxyHandler(
             .Where(h => !SkippedRequestHeaders.Contains(h.Key))
             .ToDictionary(h => h.Key.ToLowerInvariant(), h => h.Value.ToString());
 
+        // Anthropic Messages request for an exposed OpenAI model → translated to the Responses API of an OpenAI account.
+        var bridged = provider == Providers.Anthropic && HttpMethods.IsPost(ctx.Request.Method) ? ResolveBridged(json) : null;
+        if (bridged != null && IsPath(path, "v1/messages/count_tokens"))
+        {
+            await BridgeCountTokensAsync(ctx, body, bridged.Value.Requested, session, key.Id, requestHeaders, path);
+            return;
+        }
+        if (bridged != null && !IsPath(path, "v1/messages")) bridged = null;
+        JsonNode? clientNode = null;
+        if (bridged != null)
+        {
+            try { clientNode = JsonNode.Parse(body); }
+            catch (JsonException e)
+            {
+                await ErrorAsync(ctx, provider, 400, "invalid_request_error", $"Invalid JSON body: {e.Message}");
+                return;
+            }
+        }
+        var routeProvider = bridged != null ? Providers.OpenAI : provider;
+        var upstreamPath = bridged != null ? BridgeUpstreamPath : path;
+        var allowed = bridged?.Model.AccountIds;
+
         var excluded = new List<long>();
-        var selection = await selector.SelectAsync(new AccountSelectionRequest(provider, session.Id, path, key.Id, excluded), ct);
+        var selection = await selector.SelectAsync(new AccountSelectionRequest(routeProvider, session.Id, upstreamPath, key.Id, excluded, allowed), ct);
         if (selection == null)
         {
-            await ErrorAsync(ctx, provider, 503, provider == Providers.Anthropic ? "overloaded_error" : "server_error",
-                $"No enabled linked {provider} account is available for this request. Link or enable one in the gateway UI.");
+            var message = bridged != null
+                ? $"No enabled linked OpenAI account is available for {bridged.Value.Model.UpstreamModel} (requested as {bridged.Value.Requested}). Link or enable one in the gateway UI."
+                : $"No enabled linked {provider} account is available for this request. Link or enable one in the gateway UI.";
+            await ErrorAsync(ctx, provider, 503, provider == Providers.Anthropic ? "overloaded_error" : "server_error", message);
             return;
         }
 
         for (var attempt = 1; ; attempt++)
         {
             var account = selection.Account;
+            BridgeRequest? bridgeRequest = null;
+            if (bridged is { } b)
+            {
+                try
+                {
+                    bridgeRequest = AnthropicToResponses.Translate(clientNode!, new BridgeTranslateOptions
+                    {
+                        AdvertisedModelId = b.Requested, UpstreamModel = b.Model.UpstreamModel,
+                        CodexBackend = account.Kind == AccountKinds.ChatGptOAuth,
+                        SupportedEfforts = b.Model.SupportedEfforts.Count > 0 ? b.Model.SupportedEfforts : null,
+                        SessionId = session.Id,
+                    });
+                }
+                catch (BridgeTranslationException e)
+                {
+                    await ErrorAsync(ctx, provider, 400, "invalid_request_error", e.Message);
+                    return;
+                }
+                if (attempt == 1 && bridgeRequest.DroppedTools.Count > 0)
+                    log.LogInformation("Bridge request {RequestId} for {Model}: dropped tools without an OpenAI equivalent: {Tools}",
+                        requestId, b.Model.UpstreamModel, string.Join(", ", bridgeRequest.DroppedTools));
+            }
             var pctx = new ProxiedRequestContext
             {
-                RequestId = requestId, Attempt = attempt, Provider = provider, Account = account,
+                RequestId = requestId, Attempt = attempt, Provider = routeProvider, Account = account,
                 SessionId = session.Id, SessionSource = session.Source, NewSession = selection.NewSession, Rebound = selection.Rebound,
                 ClientKeyId = key.Id, Method = ctx.Request.Method, Path = path, Query = ctx.Request.QueryString.Value ?? "",
-                UpstreamUri = router.BuildUri(account.Kind, path, ctx.Request.QueryString.Value ?? ""),
-                RequestHeaders = requestHeaders, RequestBody = body, StartedAt = time.GetUtcNow(),
+                UpstreamUri = bridgeRequest != null
+                    ? router.BuildUri(account.Kind, BridgeUpstreamPath, "")
+                    : router.BuildUri(account.Kind, path, ctx.Request.QueryString.Value ?? ""),
+                RequestHeaders = requestHeaders,
+                RequestBody = bridgeRequest != null ? JsonSerializer.SerializeToUtf8Bytes(bridgeRequest.Body) : body,
+                StartedAt = time.GetUtcNow(),
+                Bridge = bridged is { } bb ? new BridgedRequest(bb.Requested, bb.Model.UpstreamModel, body) : null,
             };
 
             HttpResponseMessage? response = null;
@@ -99,7 +158,7 @@ public sealed class ProxyHandler(
                 {
                     selector.ReportRateLimited(account, RetryAfter(response));
                     excluded.Add(account.Id);
-                    var next = await selector.SelectAsync(new AccountSelectionRequest(provider, session.Id, path, key.Id, excluded), ct);
+                    var next = await selector.SelectAsync(new AccountSelectionRequest(routeProvider, session.Id, upstreamPath, key.Id, excluded, allowed), ct);
                     if (next != null)
                     {
                         log.LogInformation("Account {Account} rate-limited; failing over session {Session} to {Next}", account.Id, session.Id, next.Account.Id);
@@ -114,7 +173,11 @@ public sealed class ProxyHandler(
                     selector.ReportRateLimited(account, RetryAfter(response));
                 }
 
-                await StreamToClientAsync(ctx, response, pctx, ct);
+                if (bridgeRequest != null)
+                    await BridgeResponseWriter.WriteAsync(ctx, response, bridgeRequest, pctx.Bridge!.RequestedModel,
+                        chunk => Notify(o => o.OnResponseChunk(pctx, chunk.Span)), n => pctx.ResponseBytes += n, ct);
+                else
+                    await StreamToClientAsync(ctx, response, pctx, ct);
                 return;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -155,7 +218,7 @@ public sealed class ProxyHandler(
     {
         var client = http.CreateClient(UpstreamClientName);
         var creds = await refresher.EnsureFreshAsync(pctx.Account, ct);
-        var response = await client.SendAsync(BuildUpstreamRequest(incoming, pctx, creds), HttpCompletionOption.ResponseHeadersRead, ct);
+        var response = await client.SendAsync(Build(creds), HttpCompletionOption.ResponseHeadersRead, ct);
 
         if (response.StatusCode == HttpStatusCode.Unauthorized && pctx.Account.IsOAuth && creds.RefreshToken != null)
         {
@@ -163,10 +226,95 @@ public sealed class ProxyHandler(
             if (refreshed != null)
             {
                 response.Dispose();
-                response = await client.SendAsync(BuildUpstreamRequest(incoming, pctx, refreshed), HttpCompletionOption.ResponseHeadersRead, ct);
+                response = await client.SendAsync(Build(refreshed), HttpCompletionOption.ResponseHeadersRead, ct);
             }
         }
         return response;
+
+        HttpRequestMessage Build(AccountCredentials c) =>
+            pctx.Bridge != null ? BuildBridgeRequest(pctx, c) : BuildUpstreamRequest(incoming, pctx, c);
+    }
+
+    /// <summary>
+    /// A translated Responses request. The client's Anthropic headers (versions, betas, SDK headers) mean nothing to
+    /// OpenAI and are not forwarded. The ChatGPT Codex backend gets the headers Codex sends.
+    /// </summary>
+    private static HttpRequestMessage BuildBridgeRequest(ProxiedRequestContext pctx, AccountCredentials creds)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, pctx.UpstreamUri) { Content = new ByteArrayContent(pctx.RequestBody) };
+        req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        req.Headers.Accept.ParseAdd("text/event-stream");
+        req.Headers.Accept.ParseAdd("application/json");
+        if (pctx.Account.Kind == AccountKinds.ChatGptOAuth)
+        {
+            req.Headers.TryAddWithoutValidation("OpenAI-Beta", "responses=experimental");
+            req.Headers.TryAddWithoutValidation("originator", "codex_cli_rs");
+            req.Headers.TryAddWithoutValidation("session_id", pctx.SessionId);
+            req.Headers.TryAddWithoutValidation("user-agent", $"codex_cli_rs/{BridgeModelCatalog.CodexClientVersion} (ai-coding-gateway bridge)");
+        }
+        else
+        {
+            req.Headers.TryAddWithoutValidation("user-agent", "ai-coding-gateway-bridge");
+        }
+        InjectCredentials(req, pctx.Account.Kind, creds);
+        return req;
+    }
+
+    /// <summary>Upstream path of bridged requests (Responses API; the router maps it to the Codex backend for ChatGPT accounts).</summary>
+    public const string BridgeUpstreamPath = "v1/responses";
+
+    private static bool IsPath(string path, string expected) => string.Equals(path.Trim('/'), expected, StringComparison.OrdinalIgnoreCase);
+
+    private (BridgeModel Model, string Requested)? ResolveBridged(JsonElement? json)
+    {
+        if (json is not { ValueKind: JsonValueKind.Object } j || !j.TryGetProperty("model", out var m) || m.ValueKind != JsonValueKind.String)
+            return null;
+        var requested = m.GetString()!;
+        return bridgeCatalog.ResolveExposed(requested) is { } model ? (model, requested) : null;
+    }
+
+    /// <summary>
+    /// <c>count_tokens</c> for a bridged model: OpenAI has no equivalent on the Codex backend, so the gateway estimates
+    /// locally (never calls a provider) and logs the call like other count_tokens requests (no account, no tokens).
+    /// </summary>
+    private async Task BridgeCountTokensAsync(
+        HttpContext ctx, byte[] body, string requested, SessionIdentity session, long clientKeyId, IReadOnlyDictionary<string, string> headers, string path)
+    {
+        var started = time.GetUtcNow();
+        int estimate;
+        try
+        {
+            estimate = JsonNode.Parse(body) is { } node ? BridgeTokenEstimator.Estimate(node) : 0;
+        }
+        catch (JsonException e)
+        {
+            await ErrorAsync(ctx, Providers.Anthropic, 400, "invalid_request_error", $"Invalid JSON body: {e.Message}");
+            return;
+        }
+        var payload = JsonSerializer.SerializeToUtf8Bytes(new { input_tokens = estimate });
+        ctx.Response.StatusCode = 200;
+        ctx.Response.ContentType = "application/json";
+        await ctx.Response.Body.WriteAsync(payload, ctx.RequestAborted);
+
+        try
+        {
+            var (client, version) = RequestInfo.ParseClient(headers);
+            var at = time.GetUtcNow().ToUnixTimeMilliseconds();
+            var bridge = bridgeCatalog.ResolveExposed(requested);
+            usage.Insert(new RequestRecord
+            {
+                RequestId = Guid.NewGuid().ToString("N"), Attempt = 1, Provider = Providers.OpenAI, AccountId = null,
+                SessionId = session.Source != "derived" ? session.Id : null, SessionSource = session.Source,
+                ClientKeyId = clientKeyId, Client = client, ClientVersion = version, Method = ctx.Request.Method, Path = path,
+                Endpoint = Endpoints.CountTokens, Model = bridge?.UpstreamModel, RequestedModel = requested,
+                Bridge = BridgedRequest.AnthropicToOpenAI, Status = 200, StartedAt = started.ToUnixTimeMilliseconds(),
+                ResponseStartedAt = at, FirstByteAt = at, CompletedAt = at, RequestBytes = body.Length, ResponseBytes = payload.Length,
+            });
+        }
+        catch (Exception e)
+        {
+            log.LogError(e, "Failed to record a bridged count_tokens call");
+        }
     }
 
     private static HttpRequestMessage BuildUpstreamRequest(HttpRequest incoming, ProxiedRequestContext pctx, AccountCredentials creds)

@@ -25,6 +25,12 @@ public sealed class ProxiedRequestContext
     public required IReadOnlyDictionary<string, string> RequestHeaders { get; init; }
     public required byte[] RequestBody { get; init; }
     public required DateTimeOffset StartedAt { get; init; }
+    /// <summary>
+    /// Set when an Anthropic Messages request was translated for an OpenAI model (see <c>Gateway.Bridge</c>). Then
+    /// <see cref="Provider"/>, <see cref="Account"/>, <see cref="UpstreamUri"/>, <see cref="RequestBody"/> and the observed
+    /// response are the upstream OpenAI ones, while <see cref="Path"/> and <see cref="RequestHeaders"/> are the client's.
+    /// </summary>
+    public BridgedRequest? Bridge { get; init; }
 
     public int StatusCode { get; set; }
     public DateTimeOffset? ResponseStartedAt { get; set; }
@@ -40,6 +46,15 @@ public sealed class ProxiedRequestContext
 
     /// <summary>Per-request scratch space for observers (e.g. an SSE parser).</summary>
     public Dictionary<string, object> Items { get; } = new();
+}
+
+/// <param name="RequestedModel">The advertised model id the client asked for.</param>
+/// <param name="UpstreamModel">The OpenAI model the request was sent to.</param>
+/// <param name="ClientBody">The client's original (Anthropic Messages) request body.</param>
+public sealed record BridgedRequest(string RequestedModel, string UpstreamModel, byte[] ClientBody)
+{
+    public const string AnthropicToOpenAI = "anthropic->openai";
+    public string Kind => AnthropicToOpenAI;
 }
 
 /// <summary>

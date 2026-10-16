@@ -66,6 +66,12 @@ export default function RequestsTable({ rows, showSession = true }: { rows: Requ
               </td>
               <td title={r.requestedSpeed || r.reportedSpeed ? `requested ${r.requestedSpeed ?? '—'} · reported ${r.reportedSpeed ?? '—'}` : ''}>
                 {r.model ?? '—'}
+                {r.bridge && (
+                  <span className="muted small" title={`Claude Code request translated (${r.bridge})`}>
+                    {' '}
+                    via {r.requestedModel ?? 'bridge'}
+                  </span>
+                )}
                 {r.speedMode && r.speedMode !== 'standard' && (
                   <>
                     {' '}

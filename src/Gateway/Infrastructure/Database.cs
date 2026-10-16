@@ -197,6 +197,12 @@ public sealed class Database
                 PRIMARY KEY (model_id, account_id)
             );
             """),
+        // Bridged requests (Claude Code → OpenAI): the advertised model id the client asked for and the translation applied.
+        // NULL for pass-through traffic, where the requested model is the recorded model.
+        (7, """
+            ALTER TABLE requests ADD COLUMN requested_model TEXT;
+            ALTER TABLE requests ADD COLUMN bridge TEXT;
+            """),
     ];
 
     public Database(GatewayOptions options)

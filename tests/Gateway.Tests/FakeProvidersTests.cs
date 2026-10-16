@@ -349,7 +349,7 @@ public class FakeProvidersTests
         Assert.Equal(55.5, p.GetProperty("windows").EnumerateArray().First(w => w.GetProperty("name").GetString() == "primary").GetProperty("utilization").GetDouble());
 
         var token = acct.GetProperty("accessToken").GetString()!;
-        await client.SendAsync(Json(HttpMethod.Post, "/backend-api/codex/responses", new { model = "m", stream = true, input = "hi" },
+        await client.SendAsync(Json(HttpMethod.Post, "/backend-api/codex/responses", new { model = "m", stream = true, store = false, instructions = "x", input = "hi" },
             ("authorization", "Bearer " + token), ("chatgpt-account-id", "acc-x"), ("session_id", "sess-9")));
         var requests = await client.GetFromJsonAsync<JsonElement>("/fake-admin/openai/requests?accountId=oa1");
         var r = Assert.Single(requests.EnumerateArray());

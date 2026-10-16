@@ -17,13 +17,15 @@ public sealed class UsageStore(Database db)
                 client, client_version, agent_id, agent_role, method, path, endpoint, model, stream, status, error_type,
                 stop_reason, cancelled, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
                 context_tokens, tool_calls, cost_usd, priced, started_at, response_started_at, first_byte_at, completed_at,
-                request_bytes, response_bytes, first_token_at, generation_ms, requested_speed, reported_speed, speed_mode)
+                request_bytes, response_bytes, first_token_at, generation_ms, requested_speed, reported_speed, speed_mode,
+                requested_model, bridge)
             VALUES (
                 $request_id, $attempt, $retried, $provider, $account_id, $account_kind, $session_id, $session_source, $client_key_id,
                 $client, $client_version, $agent_id, $agent_role, $method, $path, $endpoint, $model, $stream, $status, $error_type,
                 $stop_reason, $cancelled, $input_tokens, $output_tokens, $cache_read_tokens, $cache_write_tokens, $reasoning_tokens,
                 $context_tokens, $tool_calls, $cost_usd, $priced, $started_at, $response_started_at, $first_byte_at, $completed_at,
-                $request_bytes, $response_bytes, $first_token_at, $generation_ms, $requested_speed, $reported_speed, $speed_mode)
+                $request_bytes, $response_bytes, $first_token_at, $generation_ms, $requested_speed, $reported_speed, $speed_mode,
+                $requested_model, $bridge)
             RETURNING id;
             """;
         void P(string name, object? value) => cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
@@ -39,6 +41,7 @@ public sealed class UsageStore(Database db)
         P("$completed_at", r.CompletedAt); P("$request_bytes", r.RequestBytes); P("$response_bytes", r.ResponseBytes);
         P("$first_token_at", r.FirstTokenAt); P("$generation_ms", r.GenerationMs); P("$requested_speed", r.RequestedSpeed);
         P("$reported_speed", r.ReportedSpeed); P("$speed_mode", r.SpeedMode);
+        P("$requested_model", r.RequestedModel); P("$bridge", r.Bridge);
         var id = Convert.ToInt64(cmd.ExecuteScalar());
 
         foreach (var (tool, count) in r.Tools)

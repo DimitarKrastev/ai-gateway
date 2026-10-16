@@ -160,11 +160,26 @@ public static class OpenAIFake
         var model = body.Str("model");
         if (string.IsNullOrEmpty(model)) { await ErrorAsync(ctx, 400, "Missing required parameter: 'model'.", "invalid_request_error", "missing_required_parameter"); return; }
         var stream = body.Bool("stream");
-        if (chatgpt && !stream)
+        if (chatgpt && CodexBackendViolation(body) is { } violation)
         {
+            // The Codex backend answers request-shape errors with {"detail": "..."} (not the API's error object).
             ctx.Response.StatusCode = 400;
-            await ctx.Response.WriteAsJsonAsync(new { detail = "Stream must be set to true" });
+            await ctx.Response.WriteAsJsonAsync(new { detail = violation });
             return;
+        }
+        foreach (var item in body.Prop("input").Arr())
+        {
+            if (item.Str("type") != "reasoning") continue;
+            if (item.Prop("summary") is not { ValueKind: JsonValueKind.Array })
+            {
+                await ErrorAsync(ctx, 400, "Missing required parameter: 'input[].summary'.", "invalid_request_error", "missing_required_parameter");
+                return;
+            }
+            if (item.Str("encrypted_content") is { } enc && !state.KnowsEncryptedReasoning(enc))
+            {
+                await ErrorAsync(ctx, 400, "The encrypted content for item reasoning could not be verified.", "invalid_request_error", "invalid_encrypted_content");
+                return;
+            }
         }
 
         var input = body.Prop("input");
@@ -177,7 +192,14 @@ public static class OpenAIFake
         var firstItem = input is { ValueKind: JsonValueKind.Array } arr && arr.GetArrayLength() > 0 ? arr[0].GetRawText() : input?.GetRawText();
         var cacheKey = body.Str("prompt_cache_key") ?? Tokens.Hash(model, body.Prop("instructions")?.GetRawText(), firstItem);
         var cached = state.CacheLookupAndStore(acct, cacheKey, total);
-        var reasoning = body.Prop("reasoning") is { ValueKind: JsonValueKind.Object } ? Math.Max(8, turn.OutputTokens / 2) : 0;
+        var reasoningParams = body.Prop("reasoning");
+        var reasoning = reasoningParams is { ValueKind: JsonValueKind.Object } ? Math.Max(8, turn.OutputTokens / 2) : 0;
+        // With a reasoning summary requested the response starts with a reasoning item (summary text, and the encrypted
+        // reasoning when include has reasoning.encrypted_content).
+        var summaryText = reasoningParams is { ValueKind: JsonValueKind.Object } rp && rp.Str("summary") is { Length: > 0 } sm && sm != "none"
+            ? $"**Planning**\n\nThinking about the request (effort {rp.Str("effort") ?? "default"})."
+            : null;
+        var includeEncrypted = body.Prop("include").Arr().Any(i => i.ValueKind == JsonValueKind.String && i.GetString() == "reasoning.encrypted_content");
         var usage = new TokenUsage(total, cached, turn.OutputTokens + reasoning, reasoning);
 
         if (!await AdmitAsync(ctx, state, acct, usage, chatgpt)) return;
@@ -189,6 +211,10 @@ public static class OpenAIFake
         var respId = "resp_" + FakeProviderState.RandomToken(24).Replace("-", "a").Replace("_", "b");
         var created = state.Now.ToUnixTimeSeconds();
         var items = new List<Dictionary<string, object?>>();
+        if (summaryText != null)
+            items.Add(new() { ["id"] = "rs_" + FakeProviderState.RandomToken(16), ["type"] = "reasoning",
+                ["summary"] = new object[] { new { type = "summary_text", text = summaryText } },
+                ["encrypted_content"] = includeEncrypted ? state.IssueEncryptedReasoning() : null });
         if (turn.ToolCalls.Count == 0)
             items.Add(new() { ["id"] = "msg_" + FakeProviderState.RandomToken(16), ["type"] = "message", ["status"] = "completed", ["role"] = "assistant",
                 ["content"] = new object[] { new { type = "output_text", text = turn.Text, annotations = Array.Empty<object>(), logprobs = Array.Empty<object>() } } });
@@ -230,13 +256,45 @@ public static class OpenAIFake
         await Emit("response.created", new() { ["response"] = Response("in_progress", [], false) });
         await Emit("response.in_progress", new() { ["response"] = Response("in_progress", [], false) });
         if (firstTokenDelay > 0) await Task.Delay(firstTokenDelay);
-        var pacer = new FakePacer(generationMs, items.Sum(item => (string)item["type"]! == "message"
-            ? AnthropicFake.Chunks(turn.Text, 24).Count() : AnthropicFake.Chunks((string)item["arguments"]!, 12).Count()));
+        var pacer = new FakePacer(generationMs, items.Sum(item => (string)item["type"]! switch
+        {
+            "message" => AnthropicFake.Chunks(turn.Text, 24).Count(),
+            "reasoning" => AnthropicFake.Chunks(summaryText!, 24).Count(),
+            _ => AnthropicFake.Chunks((string)item["arguments"]!, 12).Count(),
+        }));
+        var deltas = 0;
+        async Task<bool> FailedMidStreamAsync()
+        {
+            if (!turn.FailMidStream || ++deltas != 1) return false;
+            await Emit("response.failed", new()
+            {
+                ["response"] = new Dictionary<string, object?>
+                {
+                    ["id"] = respId, ["object"] = "response", ["created_at"] = created, ["status"] = "failed", ["model"] = model,
+                    ["error"] = new { code = "server_error", message = "Injected mid-stream failure" }, ["output"] = Array.Empty<object>(),
+                    ["usage"] = null,
+                },
+            });
+            return true;
+        }
         for (var i = 0; i < items.Count; i++)
         {
             var item = items[i];
             var id = (string)item["id"]!;
-            if ((string)item["type"]! == "message")
+            if ((string)item["type"]! == "reasoning")
+            {
+                await Emit("response.output_item.added", new() { ["output_index"] = i, ["item"] = new { id, type = "reasoning", summary = Array.Empty<object>() } });
+                await Emit("response.reasoning_summary_part.added", new() { ["item_id"] = id, ["output_index"] = i, ["summary_index"] = 0, ["part"] = new { type = "summary_text", text = "" } });
+                foreach (var chunk in AnthropicFake.Chunks(summaryText!, 24))
+                {
+                    await pacer.BeforeDeltaAsync();
+                    await Emit("response.reasoning_summary_text.delta", new() { ["item_id"] = id, ["output_index"] = i, ["summary_index"] = 0, ["delta"] = chunk });
+                    if (await FailedMidStreamAsync()) return;
+                }
+                await Emit("response.reasoning_summary_text.done", new() { ["item_id"] = id, ["output_index"] = i, ["summary_index"] = 0, ["text"] = summaryText });
+                await Emit("response.reasoning_summary_part.done", new() { ["item_id"] = id, ["output_index"] = i, ["summary_index"] = 0, ["part"] = new { type = "summary_text", text = summaryText } });
+            }
+            else if ((string)item["type"]! == "message")
             {
                 await Emit("response.output_item.added", new() { ["output_index"] = i, ["item"] = new { id, type = "message", status = "in_progress", role = "assistant", content = Array.Empty<object>() } });
                 await Emit("response.content_part.added", new() { ["item_id"] = id, ["output_index"] = i, ["content_index"] = 0, ["part"] = new { type = "output_text", text = "", annotations = Array.Empty<object>() } });
@@ -244,6 +302,7 @@ public static class OpenAIFake
                 {
                     await pacer.BeforeDeltaAsync();
                     await Emit("response.output_text.delta", new() { ["item_id"] = id, ["output_index"] = i, ["content_index"] = 0, ["delta"] = chunk, ["logprobs"] = Array.Empty<object>() });
+                    if (await FailedMidStreamAsync()) return;
                 }
                 await Emit("response.output_text.done", new() { ["item_id"] = id, ["output_index"] = i, ["content_index"] = 0, ["text"] = turn.Text, ["logprobs"] = Array.Empty<object>() });
                 await Emit("response.content_part.done", new() { ["item_id"] = id, ["output_index"] = i, ["content_index"] = 0, ["part"] = new { type = "output_text", text = turn.Text, annotations = Array.Empty<object>() } });
@@ -256,6 +315,7 @@ public static class OpenAIFake
                 {
                     await pacer.BeforeDeltaAsync();
                     await Emit("response.function_call_arguments.delta", new() { ["item_id"] = id, ["output_index"] = i, ["delta"] = part });
+                    if (await FailedMidStreamAsync()) return;
                 }
                 await Emit("response.function_call_arguments.done", new() { ["item_id"] = id, ["output_index"] = i, ["arguments"] = args });
             }
@@ -263,6 +323,17 @@ public static class OpenAIFake
         }
         await pacer.FinishAsync();
         await Emit("response.completed", new() { ["response"] = Response("completed", items, true) });
+    }
+
+    /// <summary>What the ChatGPT Codex backend rejects that the public API accepts (null when the request is fine).</summary>
+    private static string? CodexBackendViolation(JsonElement body)
+    {
+        if (!body.Bool("stream")) return "Stream must be set to true";
+        if (body.Prop("store") is not { ValueKind: JsonValueKind.False }) return "Store must be set to false";
+        if (string.IsNullOrWhiteSpace(body.Str("instructions"))) return "Instructions are required";
+        foreach (var p in new[] { "max_output_tokens", "temperature", "top_p" })
+            if (body.Prop(p) is not null) return $"Unsupported parameter: {p}";
+        return null;
     }
 
     private static (string Text, bool IsToolResult) LastInput(JsonElement? input)

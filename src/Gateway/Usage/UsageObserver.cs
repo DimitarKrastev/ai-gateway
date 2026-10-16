@@ -10,7 +10,7 @@ public sealed record RequestRecord
     public required int Attempt { get; init; }
     public bool Retried { get; init; }
     public required string Provider { get; init; }
-    public long AccountId { get; init; }
+    public long? AccountId { get; init; }
     public string? AccountKind { get; init; }
     public string? SessionId { get; init; }
     public string? SessionSource { get; init; }
@@ -23,6 +23,10 @@ public sealed record RequestRecord
     public required string Path { get; init; }
     public required string Endpoint { get; init; }
     public string? Model { get; init; }
+    /// <summary>The model id the client asked for when it differs from what served it (bridged requests: the advertised id).</summary>
+    public string? RequestedModel { get; init; }
+    /// <summary>Protocol translation applied, e.g. <c>anthropic-&gt;openai</c>; null for pass-through traffic.</summary>
+    public string? Bridge { get; init; }
     public bool Stream { get; init; }
     public int Status { get; init; }
     public string? ErrorType { get; init; }
@@ -58,7 +62,7 @@ public sealed record RequestRecord
 public sealed record LiveRequest(
     string Key, string RequestId, string Provider, long AccountId, string AccountName, string SessionId,
     string? AgentId, string? AgentRole, string Client, string? Model, bool Stream, string Endpoint, long StartedAt,
-    string? SpeedMode = null);
+    string? SpeedMode = null, string? RequestedModel = null);
 
 public sealed class LiveRequests
 {
@@ -92,7 +96,7 @@ public sealed class UsageObserver(
         ctx.Items[StateKey] = state;
         live.Add(new LiveRequest(state.LiveKey, ctx.RequestId, ctx.Provider, ctx.Account.Id, ctx.Account.Name, ctx.SessionId,
             state.Agent?.Id, state.Agent?.Role, info.Client, info.Model, info.Stream, info.Endpoint, ctx.StartedAt.ToUnixTimeMilliseconds(),
-            Endpoints.IsGeneration(info.Endpoint) ? SpeedModes.Resolve(info.RequestedSpeed, null) : null));
+            Endpoints.IsGeneration(info.Endpoint) ? SpeedModes.Resolve(info.RequestedSpeed, null) : null, ctx.Bridge?.RequestedModel));
     }
 
     public void OnResponseStarted(ProxiedRequestContext ctx)
@@ -136,7 +140,7 @@ public sealed class UsageObserver(
                 SessionSource = ctx.SessionSource,
                 ClientKeyId = ctx.ClientKeyId, Client = info.Client, ClientVersion = info.ClientVersion,
                 AgentId = agent?.Id, AgentRole = agent?.Role, Method = ctx.Method, Path = ctx.Path, Endpoint = info.Endpoint,
-                Model = model, Stream = stream,
+                Model = model, RequestedModel = ctx.Bridge?.RequestedModel, Bridge = ctx.Bridge?.Kind, Stream = stream,
                 Status = ctx.StatusCode, ErrorType = usage.ErrorType ?? (ctx.Error != null ? "upstream_error" : null),
                 StopReason = usage.StopReason, Cancelled = ctx.ClientCancelled,
                 InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens, CacheReadTokens = usage.CacheReadTokens,

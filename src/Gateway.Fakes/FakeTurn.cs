@@ -12,7 +12,8 @@ public sealed record FakeToolCall(string Id, string Name, string InputJson);
 /// <c>[[tool:NAME]]</c> call NAME (<c>[[tool:NAME*N]]</c>: N parallel calls of NAME); <c>[[tools:N]]</c> N parallel calls; <c>[[no-tool]]</c> plain text;
 /// <c>[[error:CODE]]</c> fail with HTTP CODE; <c>[[slow:MS]]</c> delay between stream events; <c>[[out:N]]</c> ~N output tokens;
 /// <c>[[tps:N]]</c> generate at N output tokens/second in standard mode (fast/flex modes scale it, see <see cref="FakeOptions"/>);
-/// <c>[[ttft:MS]]</c> wait MS before the first output token.
+/// <c>[[ttft:MS]]</c> wait MS before the first output token; <c>[[fail-midstream]]</c> (OpenAI Responses streams) fail with
+/// <c>response.failed</c> after the first output delta.
 /// Default: when tools are offered and the last message is not a tool result, call the first tool; otherwise answer with text.
 /// </summary>
 public sealed partial class FakeTurn
@@ -24,6 +25,7 @@ public sealed partial class FakeTurn
     public int OutputTokens { get; private init; }
     public double? TokensPerSecond { get; private init; }
     public int? FirstTokenDelayMs { get; private init; }
+    public bool FailMidStream { get; private init; }
 
     public static FakeTurn Plan(string provider, string accountId, string lastUserText, bool lastIsToolResult,
         IReadOnlyList<string> toolNames, string toolIdPrefix)
@@ -66,6 +68,7 @@ public sealed partial class FakeTurn
         {
             Text = text, ErrorStatus = error, DelayMs = delay, OutputTokens = output,
             TokensPerSecond = tps is > 0 ? tps : null, FirstTokenDelayMs = ttft,
+            FailMidStream = lastUserText.Contains("[[fail-midstream]]", StringComparison.Ordinal),
         };
         turn.ToolCalls.AddRange(calls);
         return turn;

@@ -38,6 +38,8 @@ public sealed class PolicyAccountSelector(
             var eligible = accounts.List(req.Provider)
                 .Where(a => a.Enabled && UpstreamRouter.IsEligible(a.Kind, req.UpstreamPath))
                 .ToList();
+            if (req.AllowedAccountIds is { Count: > 0 } allowed && eligible.Any(a => allowed.Contains(a.Id)))
+                eligible = eligible.Where(a => allowed.Contains(a.Id)).ToList();
             // Accounts excluded for this request just answered 429; they can't serve it unless a reset is used on them,
             // so they stay in the reset pool (otherwise the credit closest to expiring could be skipped).
             var candidates = eligible.Where(a => !req.ExcludedAccountIds.Contains(a.Id)).ToList();

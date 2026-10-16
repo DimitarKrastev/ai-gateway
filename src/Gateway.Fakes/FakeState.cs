@@ -311,6 +311,21 @@ public sealed class FakeProviderState
         }
     }
 
+    // ---------- encrypted reasoning (store:false round trip) ----------
+
+    private readonly HashSet<string> _encryptedReasoning = new();
+
+    /// <summary>Issues an opaque encrypted reasoning blob that a later request may send back as a reasoning input item.</summary>
+    internal string IssueEncryptedReasoning()
+    {
+        var blob = "gAAAAfake" + RandomToken(32);
+        lock (_gate) _encryptedReasoning.Add(blob);
+        return blob;
+    }
+
+    /// <summary>True when the blob was issued by this fake (like the real API, which rejects reasoning it cannot decrypt).</summary>
+    internal bool KnowsEncryptedReasoning(string blob) { lock (_gate) return _encryptedReasoning.Contains(blob); }
+
     // ---------- recorded requests ----------
 
     internal void Record(string method, string path, string query, Dictionary<string, string> headers, string body, string? accountId, int status)

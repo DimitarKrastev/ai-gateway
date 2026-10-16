@@ -63,7 +63,9 @@ public sealed record RequestInfo(
 
     public static RequestInfo Parse(ProxiedRequestContext ctx)
     {
-        var endpoint = Endpoints.Classify(ctx.Provider, ctx.Path);
+        // Bridged requests are Responses requests upstream (usage is parsed from the Responses stream), while the agent is
+        // identified from the client's own Anthropic request, like any Claude Code request.
+        var endpoint = ctx.Bridge != null ? Endpoints.Responses : Endpoints.Classify(ctx.Provider, ctx.Path);
         var (client, version) = ParseClient(ctx.RequestHeaders);
         var subagent = ctx.RequestHeaders.GetValueOrDefault("x-openai-subagent");
         var agentHeader = AgentIdHeaders.Select(h => ctx.RequestHeaders.GetValueOrDefault(h)).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v))?.Trim();
@@ -78,8 +80,17 @@ public sealed record RequestInfo(
 
         var model = body.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
         var stream = body.TryGetProperty("stream", out var s) && s.ValueKind == JsonValueKind.True;
+        var agentBody = body;
+        if (ctx.Bridge != null)
+        {
+            try
+            {
+                if (JsonDocument.Parse(ctx.Bridge.ClientBody).RootElement is { ValueKind: JsonValueKind.Object } clientBody) agentBody = clientBody;
+            }
+            catch (JsonException) { }
+        }
         return new RequestInfo(endpoint, model, stream, client, version, string.IsNullOrEmpty(subagent) ? null : subagent,
-            ReadToolNames(body), Truncate(SystemText(body)), Truncate(FirstUserText(body)))
+            ReadToolNames(agentBody), Truncate(SystemText(agentBody)), Truncate(FirstUserText(agentBody)))
         {
             RequestedSpeed = ScalarText(body, ctx.Provider == Providers.Anthropic ? "speed" : "service_tier"),
             AgentHeader = agentHeader,

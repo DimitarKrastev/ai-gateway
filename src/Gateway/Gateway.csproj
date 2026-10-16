@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <WebDir>$(MSBuildProjectDirectory)/../../web</WebDir>
     <WebOutDir>$(MSBuildProjectDirectory)/wwwroot</WebOutDir>
+    <!-- The UI is served from wwwroot by a PhysicalFileProvider (Program.cs), not the static web assets manifest; the SDK's
+         asset discovery would otherwise remember the previous build's hashed file names and fail after a UI change. -->
+    <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
   </PropertyGroup>
 
   <ItemGroup>

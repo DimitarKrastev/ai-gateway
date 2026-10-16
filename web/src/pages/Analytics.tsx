@@ -17,12 +17,13 @@ const GROUPS = [
   { key: 'agent', label: 'Agent type' },
   { key: 'agentId', label: 'Agent (each instance)' },
   { key: 'model', label: 'Model' },
+  { key: 'requestedModel', label: 'Requested model' },
   { key: 'speedMode', label: 'Speed mode' },
   { key: 'modelMode', label: 'Model + mode' },
   { key: 'provider', label: 'Provider' },
   { key: 'client', label: 'Client' },
 ]
-const BREAKDOWNS = ['account', 'session', 'agent', 'agentId', 'model', 'speedMode', 'modelMode', 'provider', 'client', 'tool']
+const BREAKDOWNS = ['account', 'session', 'agent', 'agentId', 'model', 'requestedModel', 'speedMode', 'modelMode', 'provider', 'client', 'tool']
 const BUCKETS = ['auto', 'minute', '5min', '15min', 'hour', '6hour', 'day']
 const TPS_STATS: Array<{ key: TpsStat; label: string }> = [
   { key: 'tokensPerSecond', label: 'Weighted avg' },
@@ -34,12 +35,13 @@ type Filters = {
   provider: string
   accountId: string
   model: string
+  requestedModel: string
   speedMode: string
   agent: string
   sessionId: string
   agentId: string
 }
-const NO_FILTERS: Filters = { provider: '', accountId: '', model: '', speedMode: '', agent: '', sessionId: '', agentId: '' }
+const NO_FILTERS: Filters = { provider: '', accountId: '', model: '', requestedModel: '', speedMode: '', agent: '', sessionId: '', agentId: '' }
 
 const breakdownLabel = (b: string) =>
   b === 'agentId' ? 'Agent' : (GROUPS.find((g) => g.key === b)?.label ?? (b === 'tool' ? 'Tool' : b))
@@ -86,6 +88,7 @@ export default function Analytics() {
       agent: 'agent',
       agentId: 'agentId',
       model: 'model',
+      requestedModel: 'requestedModel',
       speedMode: 'speedMode',
       provider: 'provider',
     }
@@ -168,6 +171,12 @@ export default function Analytics() {
           <label>
             Agent
             <input value={f.agentId} onChange={(e) => set('agentId', e.target.value.trim())} />
+          </label>
+        )}
+        {f.requestedModel && (
+          <label>
+            Requested model
+            <input value={f.requestedModel} onChange={(e) => set('requestedModel', e.target.value.trim())} />
           </label>
         )}
         {active && (

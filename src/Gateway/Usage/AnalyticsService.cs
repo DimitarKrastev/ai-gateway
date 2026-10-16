@@ -11,7 +11,8 @@ namespace Gateway.Usage;
 /// </summary>
 public sealed record AnalyticsFilter(
     long From, long To, string? Provider = null, long? AccountId = null, string? SessionId = null, string? Agent = null,
-    string? AgentId = null, string? Model = null, string? Client = null, bool IncludeRetried = false, string? SpeedMode = null)
+    string? AgentId = null, string? Model = null, string? Client = null, bool IncludeRetried = false, string? SpeedMode = null,
+    string? RequestedModel = null)
 {
     public static AnalyticsFilter FromQuery(IQueryCollection q, DateTimeOffset now)
     {
@@ -20,7 +21,7 @@ public sealed record AnalyticsFilter(
         string? S(string k) => string.IsNullOrWhiteSpace(q[k]) ? null : q[k].ToString();
         return new AnalyticsFilter(from, Math.Max(to, from + 1), S("provider"),
             long.TryParse(q["accountId"], out var a) ? a : null, S("sessionId"), S("agent"), S("agentId"), S("model"), S("client"),
-            q["includeRetried"] == "true", S("speedMode"));
+            q["includeRetried"] == "true", S("speedMode"), S("requestedModel"));
     }
 
     public static long? ParseTime(string? s)
@@ -55,6 +56,7 @@ public sealed record AnalyticsFilter(
         Add($"COALESCE({p}model, 'unknown') = $f_model", "$f_model", Model);
         Add($"{p}client = $f_client", "$f_client", Client);
         Add($"{SpeedModes.Sql(p)} = $f_speed", "$f_speed", SpeedMode);
+        Add($"{AnalyticsService.RequestedModelSql(p)} = $f_requested_model", "$f_requested_model", RequestedModel);
         return string.Join(" AND ", parts);
     }
 
@@ -62,7 +64,8 @@ public sealed record AnalyticsFilter(
         (Provider == null || r.Provider == Provider) && (AccountId == null || r.AccountId == AccountId)
         && (SessionId == null || r.SessionId == SessionId) && (AgentId == null || r.AgentId == AgentId)
         && (Agent == null || $"{r.Client}:{r.AgentRole ?? "none"}" == Agent) && (Model == null || (r.Model ?? "unknown") == Model)
-        && (Client == null || r.Client == Client) && (SpeedMode == null || SpeedModes.Of(r.SpeedMode, r.Endpoint) == SpeedMode);
+        && (Client == null || r.Client == Client) && (SpeedMode == null || SpeedModes.Of(r.SpeedMode, r.Endpoint) == SpeedMode)
+        && (RequestedModel == null || (r.RequestedModel ?? r.Model ?? "unknown") == RequestedModel);
 }
 
 public sealed record SeriesInfo(string Key, string Id, string Label, double Total);
@@ -125,7 +128,10 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
 
     public static IReadOnlyCollection<string> MetricNames => MetricSql.Keys;
     public static readonly string[] GroupNames =
-        ["none", "provider", "account", "session", "agent", "agentId", "model", "speedMode", "modelMode", "client", "endpoint"];
+        ["none", "provider", "account", "session", "agent", "agentId", "model", "requestedModel", "speedMode", "modelMode", "client", "endpoint"];
+
+    /// <summary>The model the client asked for: the advertised id of bridged requests, else the recorded model.</summary>
+    public static string RequestedModelSql(string p = "") => $"COALESCE({p}requested_model, {p}model, 'unknown')";
 
     /// <summary>Per-request value of each metric for <see cref="AgentSeries"/>; null = metric has no per-request meaning.</summary>
     private static string? PerRequestSql(string metric) => metric switch
@@ -166,6 +172,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         "agent" => AgentKindSql(p),
         "agentId" => $"COALESCE({p}agent_id, 'none')",
         "model" => $"COALESCE({p}model, 'unknown')",
+        "requestedModel" => RequestedModelSql(p),
         "speedMode" => SpeedModes.Sql(p),
         "modelMode" => $"(COALESCE({p}model, 'unknown') || '|' || {SpeedModes.Sql(p)})",
         "client" => $"{p}client",
@@ -376,6 +383,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         "agent" => $"{l.Client}:{l.AgentRole ?? "none"}",
         "agentId" => l.AgentId ?? "none",
         "model" => l.Model ?? "unknown",
+        "requestedModel" => l.RequestedModel ?? l.Model ?? "unknown",
         "speedMode" => SpeedModes.Of(l.SpeedMode, l.Endpoint),
         "modelMode" => $"{l.Model ?? "unknown"}|{SpeedModes.Of(l.SpeedMode, l.Endpoint)}",
         "client" => l.Client,
@@ -619,7 +627,8 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
                    r.cancelled, r.input_tokens, r.output_tokens, r.cache_read_tokens, r.cache_write_tokens, r.reasoning_tokens,
                    r.context_tokens, r.tool_calls, r.cost_usd, r.started_at, r.completed_at, r.first_byte_at,
                    (SELECT GROUP_CONCAT(t.tool || ':' || t.count, ',') FROM request_tools t WHERE t.request_row_id = r.id),
-                   r.first_token_at, r.generation_ms, r.requested_speed, r.reported_speed, r.speed_mode, {Throughput.PerRequestSql("r.")}
+                   r.first_token_at, r.generation_ms, r.requested_speed, r.reported_speed, r.speed_mode, {Throughput.PerRequestSql("r.")},
+                   r.requested_model, r.bridge
             FROM requests r WHERE {where} ORDER BY r.id DESC LIMIT $limit;
             """;
         cmd.Parameters.AddWithValue("$limit", limit);
@@ -651,6 +660,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
                 generationMs = r.IsDBNull(33) ? (long?)null : r.GetInt64(33),
                 requestedSpeed = S(34), reportedSpeed = S(35), speedMode = S(36),
                 tokensPerSecond = r.IsDBNull(37) ? (double?)null : Math.Round(r.GetDouble(37), 1),
+                requestedModel = S(38), bridge = S(39),
             });
         }
         var nextBefore = items.Count == limit ? lastId : (long?)null;
@@ -680,7 +690,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
             requests = inFlight.Select(l => new
             {
                 l.RequestId, l.Provider, l.AccountId, l.AccountName, l.SessionId, l.AgentId, l.AgentRole, l.Client, l.Model,
-                l.Stream, l.Endpoint, l.StartedAt, elapsedMs = now - l.StartedAt,
+                l.RequestedModel, l.Stream, l.Endpoint, l.StartedAt, elapsedMs = now - l.StartedAt,
             }),
         };
     }

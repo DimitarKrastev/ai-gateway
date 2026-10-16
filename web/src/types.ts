@@ -220,6 +220,10 @@ export type RequestRow = {
   path: string
   endpoint: string
   model: string | null
+  /** Advertised id Claude Code asked for when the request was bridged to an OpenAI model. */
+  requestedModel?: string | null
+  /** Protocol translation applied, e.g. `anthropic->openai`. */
+  bridge?: string | null
   stream: boolean
   status: number | null
   errorType: string | null
