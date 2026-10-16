@@ -47,3 +47,11 @@
 - **Interface changes:** none (UI only consumes item 3–5 APIs). Routes: `/`, `/analytics`, `/accounts`, `/sessions`, `/sessions/:provider/:sessionId`, `/requests`, `/settings`, `/login`.
 - **Follow-ups:** Item 7: running `dotnet src/Gateway/bin/.../Gateway.dll` from the repo root serves 404 for `/` — content root is the cwd, so set `GATEWAY_WEB_ROOT` or run from the publish dir. Parallel `[[slow:2500]]` requests logged ~30 s latency — worth a look in e2e (fake or proxy timing).
 - **Learnings:** Playwright 1.56 npm + cached `chromium_headless_shell-1248` (pass `executablePath`) works offline; keep it in the scratchpad.
+
+## Item 7 — Fixes from item 6 (latency, web root)
+- **Status:** done
+- **Evidence:** `dotnet build` (full, incl. web) 0 warnings; `dotnet test` 65/65 ×3. Repro with standalone fake (6210) + gateway (6211): 6 parallel `[[slow:250]]` streams → 3.0 s wall, each recorded 2261 ms (9 events × 250 ms). Published and Debug `Gateway.dll` started from `/` serve `/` and `/accounts` (200). Commit 88180b1 (`GatewayOptions.cs`, `Gateway.csproj`, new `tests/Gateway.Tests/ProxyConcurrencyTests.cs`, `.claude/ledger/fakes.md`).
+- **Decisions:** No gateway latency bug: the fake's `[[slow:MS]]` delays *each* SSE event, so 2500 ms × ~12 events ≈ 30 s is correct measurement. Regression test asserts parallel streams aren't serialized and recorded latency ≈ client latency. Web root default now `AppContext.BaseDirectory/wwwroot` (if it has index.html), else content-root `wwwroot`; wwwroot is copied to build output too. Data dir stays `./data` relative to cwd (keeps dev/tests unchanged) — start scripts must set `GATEWAY_DATA_DIR` explicitly.
+- **Interface changes:** none.
+- **Follow-ups:** README/start scripts: set `GATEWAY_DATA_DIR` to a stable path. Fallback session hash makes non-UUID `metadata.user_id` sessions collapse — real Claude Code uses UUIDs, so e2e should too.
+- **Learnings:** Use small `[[slow:N]]` values (per event) in e2e.
