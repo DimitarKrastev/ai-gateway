@@ -12,6 +12,8 @@ public sealed class GatewayOptions
     public string WebRoot { get; init; } = "";
     public string? AdminPassword { get; init; }
     public UpstreamOptions Upstreams { get; init; } = new();
+    /// <summary>How often usage endpoints of OAuth accounts are polled for limits; 0 disables polling.</summary>
+    public double LimitsRefreshMinutes { get; init; } = 5;
 
     public string DatabasePath => Path.Combine(DataDir, "gateway.db");
 
@@ -34,6 +36,8 @@ public sealed class GatewayOptions
             DataDir = dataDir,
             WebRoot = Path.GetFullPath(webRoot),
             AdminPassword = Get("AdminPassword", "GATEWAY_ADMIN_PASSWORD"),
+            LimitsRefreshMinutes = double.TryParse(Get("LimitsRefreshMinutes", "GATEWAY_LIMITS_REFRESH_MINUTES"),
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var m) ? Math.Max(0, m) : 5,
             Upstreams = new UpstreamOptions
             {
                 AnthropicApi = Url(Get("Upstreams:AnthropicApi", "GATEWAY_UPSTREAM_ANTHROPIC_API"), UpstreamOptions.Defaults.AnthropicApi),

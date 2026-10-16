@@ -1,3 +1,5 @@
+using Gateway.Limits;
+
 namespace Gateway.Accounts;
 
 public static class AccountEndpoints
@@ -6,7 +8,7 @@ public static class AccountEndpoints
     public sealed record AccountView(
         long Id, string Name, string Provider, string Kind, bool Enabled, int Priority,
         DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt, string CredentialHint, bool HasRefreshToken,
-        DateTimeOffset? AccessTokenExpiresAt);
+        DateTimeOffset? AccessTokenExpiresAt, AccountLimitsView? Limits = null);
 
     public static AccountView ToView(LinkedAccount a) => new(
         a.Id, a.Name, a.Provider, a.Kind, a.Enabled, a.Priority, a.CreatedAt, a.UpdatedAt,
@@ -16,17 +18,23 @@ public static class AccountEndpoints
     {
         var group = app.MapGroup("/api/accounts");
 
-        group.MapGet("", (AccountStore store) => store.List().Select(ToView));
+        group.MapGet("", (AccountStore store, LimitsService limits) =>
+        {
+            var list = store.List();
+            var views = limits.Views(list.Select(a => a.Id).ToList());
+            return list.Select(a => ToView(a) with { Limits = views[a.Id] });
+        });
 
-        group.MapGet("/{id:long}", (long id, AccountStore store) =>
-            store.Get(id) is { } a ? Results.Ok(ToView(a)) : Results.NotFound());
+        group.MapGet("/{id:long}", (long id, AccountStore store, LimitsService limits) =>
+            store.Get(id) is { } a ? Results.Ok(ToView(a) with { Limits = limits.View(id) }) : Results.NotFound());
 
-        group.MapPost("", (AccountInput input, AccountStore store) =>
+        group.MapPost("", (AccountInput input, AccountStore store, LimitsRefreshService refresh) =>
         {
             var parsed = CredentialParser.Parse(input.Kind, input);
             if (parsed.Error != null) return Results.BadRequest(new { error = parsed.Error });
             var name = string.IsNullOrWhiteSpace(input.Name) ? DefaultName(parsed.Kind!) : input.Name.Trim();
             var account = store.Create(name, parsed.Kind!, input.Enabled ?? true, input.Priority ?? 100, parsed.Credentials!);
+            refresh.Trigger(account.Id);
             return Results.Created($"/api/accounts/{account.Id}", ToView(account));
         });
 

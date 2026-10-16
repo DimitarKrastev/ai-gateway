@@ -108,6 +108,60 @@ public sealed class Database
             CREATE INDEX ix_request_tools_time ON request_tools(started_at);
             CREATE INDEX ix_request_tools_request ON request_tools(request_row_id);
             """),
+        // Limits, reset credits and routing decisions (see Gateway.Limits / Gateway.Routing).
+        (4, """
+            CREATE TABLE account_limits (
+                account_id     INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                key            TEXT NOT NULL,
+                label          TEXT NOT NULL,
+                utilization    REAL,
+                used           REAL,
+                lim            REAL,
+                remaining      REAL,
+                resets_at      INTEGER,
+                window_minutes INTEGER,
+                status         TEXT NOT NULL,
+                source         TEXT NOT NULL,
+                updated_at     INTEGER NOT NULL,
+                PRIMARY KEY (account_id, key)
+            );
+            CREATE TABLE account_limit_state (
+                account_id           INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+                exhausted_until      INTEGER,
+                exhausted_reason     TEXT,
+                unified_status       TEXT,
+                representative_claim TEXT,
+                overage_status       TEXT,
+                plan_type            TEXT,
+                refreshed_at         INTEGER,
+                refresh_error        TEXT,
+                resets_synced_at     INTEGER
+            );
+            CREATE TABLE account_resets (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id        INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                source            TEXT NOT NULL,
+                provider_reset_id TEXT,
+                expires_at        INTEGER,
+                note              TEXT,
+                created_at        INTEGER NOT NULL,
+                used_at           INTEGER,
+                used_by           TEXT,
+                UNIQUE (account_id, provider_reset_id)
+            );
+            CREATE TABLE routing_events (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                at              INTEGER NOT NULL,
+                provider        TEXT NOT NULL,
+                session_id      TEXT,
+                from_account_id INTEGER,
+                to_account_id   INTEGER,
+                reason          TEXT NOT NULL,
+                detail          TEXT
+            );
+            CREATE INDEX ix_routing_events_time ON routing_events(at);
+            CREATE INDEX ix_routing_events_session ON routing_events(session_id, at);
+            """),
     ];
 
     public Database(GatewayOptions options)

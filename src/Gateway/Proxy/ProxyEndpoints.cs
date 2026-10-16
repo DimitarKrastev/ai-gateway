@@ -27,8 +27,6 @@ public static class ProxyEndpoints
         services.AddSingleton<AccountStore>();
         services.AddSingleton<Gateway.ClientKeys.ClientKeyStore>();
         services.AddSingleton<SessionBindingStore>();
-        services.AddSingleton<AccountCooldowns>();
-        services.AddSingleton<IAccountSelector, StickyAccountSelector>();
         services.AddSingleton<UpstreamRouter>();
         services.AddSingleton<TokenRefresher>();
         services.AddSingleton<ProxyHandler>();

@@ -14,6 +14,8 @@ public class GatewayFactory : WebApplicationFactory<Program>
     {
         builder.UseSetting("Gateway:DataDir", DataDir);
         builder.UseSetting("Gateway:AdminPassword", AdminPassword);
+        // No background polling of usage endpoints in tests; tests refresh explicitly.
+        builder.UseSetting("Gateway:LimitsRefreshMinutes", "0");
     }
 
     public async Task<HttpClient> CreateLoggedInClientAsync()

@@ -2,6 +2,7 @@ using Gateway.Accounts;
 using Gateway.Auth;
 using Gateway.ClientKeys;
 using Gateway.Infrastructure;
+using Gateway.Limits;
 using Gateway.Proxy;
 using Gateway.Usage;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -22,6 +23,7 @@ builder.Services.AddSingleton<AdminCredentials>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddGatewayProxy();
 builder.Services.AddUsageAnalytics();
+builder.Services.AddLimitsAndRouting();
 
 builder.Services.AddDataProtection()
     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(options.DataDir, "keys")))
@@ -61,6 +63,7 @@ app.MapAccountEndpoints();
 app.MapClientKeyEndpoints();
 app.MapProxyEndpoints();
 app.MapAnalyticsEndpoints();
+app.MapLimitsEndpoints();
 
 // SPA fallback for client-side routes; API and proxy prefixes never fall back to the UI.
 app.MapFallback(async ctx =>
