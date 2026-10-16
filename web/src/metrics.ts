@@ -6,7 +6,8 @@ export const PALETTE = ['#4c6ef5', '#12b886', '#f59f00', '#e64980', '#7950f2', '
 export type MetricDef = {
   key: string
   label: string
-  kind: 'sum' | 'avg' | 'peak'
+  /** sum: additive (stacked); level: a quantity held over time (overlapping areas from zero); avg/peak: lines. */
+  kind: 'sum' | 'avg' | 'peak' | 'level'
   format: (v: number) => string
   /** Has a value per request, so it can be plotted per agent instance (/api/analytics/agent-series). */
   perRequest?: boolean
@@ -28,7 +29,7 @@ export const METRICS: MetricDef[] = [
   { key: 'contextMax', label: 'Context size (max)', kind: 'peak', format: tokens, perRequest: true },
   // Each agent holds its latest request's context until its next request (or 60 s after its last response); groups sum
   // their agents, so stacked areas show the context in use at every moment.
-  { key: 'contextWindow', label: 'Context window (in use)', kind: 'sum', format: tokens },
+  { key: 'contextWindow', label: 'Context window (in use)', kind: 'level', format: tokens },
   { key: 'toolCalls', label: 'Tool calls', kind: 'sum', format: count, perRequest: true },
   { key: 'errors', label: 'Errors', kind: 'sum', format: count, perRequest: true },
   { key: 'latencyAvg', label: 'Latency (avg)', kind: 'avg', format: fmtMs, perRequest: true },

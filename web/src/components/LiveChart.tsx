@@ -19,7 +19,8 @@ const f1 = (n: number) => n.toFixed(1)
 /**
  * A scrolling real-time chart (like a network traffic meter): geometry is rebuilt when data arrives (about once a
  * second) and only translated in between, every animation frame.
- * - `bucketMs` set: per-bucket values; `stack` draws stacked step areas (missing buckets are 0), `line` step lines with gaps.
+ * - `bucketMs` set: per-bucket values; `stack` draws stacked step areas (missing buckets are 0), `area` overlapping step areas
+ *   from zero (largest behind, so small ones stay visible at the bottom), `line` step lines with gaps.
  * - `bucketMs` null: per-request values (e.g. one series per agent), each held until the series' next point.
  */
 export default function LiveChart({
@@ -34,7 +35,7 @@ export default function LiveChart({
 }: {
   series: LiveSeries[]
   bucketMs: number | null
-  mode: 'stack' | 'line'
+  mode: 'stack' | 'area' | 'line'
   windowMs: number
   format: (v: number) => string
   axisFormat?: (v: number) => string
@@ -67,22 +68,26 @@ export default function LiveChart({
     const paths: Array<{ key: string; color: string; area?: string; line: string }> = []
     let max = 0
 
-    if (bucketMs !== null && mode === 'stack') {
-      // Stacked step bands over a common bucket grid.
+    if (bucketMs !== null && (mode === 'stack' || mode === 'area')) {
+      // Step bands over a common bucket grid: stacked on each other, or each from zero (largest drawn first, behind).
       const start = Math.floor(from / bucketMs) * bucketMs
       const last = Math.max(start, ...visible.map((s) => (s.points.length ? s.points[s.points.length - 1][0] : start)))
       const grid: number[] = []
       for (let t = start; t <= last; t += bucketMs) grid.push(t)
       const lower = grid.map(() => 0)
-      const bands = visible.map((s) => {
+      const overlay = mode === 'area'
+      const ordered = overlay
+        ? [...visible].sort((a, b) => Math.max(0, ...b.points.map((p) => p[1])) - Math.max(0, ...a.points.map((p) => p[1])))
+        : visible
+      const bands = ordered.map((s) => {
         const byT = new Map(s.points)
         const upper = grid.map((t, i) => lower[i] + (byT.get(t) ?? 0))
         const band = { s, lo: [...lower], hi: upper }
-        upper.forEach((v, i) => (lower[i] = v))
+        if (!overlay) upper.forEach((v, i) => (lower[i] = v))
+        grid.forEach((t, i) => {
+          if (t + bucketMs >= viewStart) max = Math.max(max, upper[i])
+        })
         return band
-      })
-      grid.forEach((t, i) => {
-        if (t + bucketMs >= viewStart) max = Math.max(max, lower[i])
       })
       const top = niceMax(max * 1.1)
       const y = (v: number) => plotH - (v / top) * (plotH - 4)
@@ -178,7 +183,7 @@ export default function LiveChart({
     if (bucketMs !== null) {
       const b = Math.floor(t / bucketMs) * bucketMs
       const p = s.points.find(([pt]) => pt === b)
-      return p ? p[1] : mode === 'stack' ? 0 : null
+      return p ? p[1] : mode === 'line' ? null : 0
     }
     let held: number | null = null
     for (let i = 0; i < s.points.length; i++) {
@@ -192,7 +197,7 @@ export default function LiveChart({
   const readout = hover
     ? visible
         .map((s) => ({ s, v: valueAt(s, hover.t) }))
-        .filter((r) => r.v !== null && (mode !== 'stack' || r.v !== 0))
+        .filter((r) => r.v !== null && (mode === 'line' || r.v !== 0))
         .sort((a, b) => (b.v ?? 0) - (a.v ?? 0))
     : []
   const readoutTotal = mode === 'stack' ? readout.reduce((sum, r) => sum + (r.v ?? 0), 0) : null
@@ -201,7 +206,7 @@ export default function LiveChart({
   const latest = (s: LiveSeries) => {
     const last = s.points[s.points.length - 1]
     if (!last) return null
-    if (bucketMs !== null && last[0] + bucketMs < now - DELAY_MS - 2 * bucketMs) return mode === 'stack' ? 0 : null
+    if (bucketMs !== null && last[0] + bucketMs < now - DELAY_MS - 2 * bucketMs) return mode === 'line' ? null : 0
     return last[1]
   }
   const toggle = (key: string) =>
@@ -232,7 +237,7 @@ export default function LiveChart({
               <g ref={groupRef}>
                 {build.paths.map((p) => (
                   <g key={p.key}>
-                    {p.area && <path d={p.area} fill={p.color} fillOpacity={0.18} />}
+                    {p.area && <path d={p.area} fill={p.color} fillOpacity={mode === 'area' ? 0.22 : 0.18} />}
                     <path d={p.line} fill="none" stroke={p.color} strokeWidth={1.5} strokeLinejoin="round" />
                   </g>
                 ))}

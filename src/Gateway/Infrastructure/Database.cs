@@ -203,6 +203,10 @@ public sealed class Database
             ALTER TABLE requests ADD COLUMN requested_model TEXT;
             ALTER TABLE requests ADD COLUMN bridge TEXT;
             """),
+        // Anthropic cache writes with the 1-hour TTL (part of cache_write_tokens), priced at 2x input instead of 1.25x.
+        (8, """
+            ALTER TABLE requests ADD COLUMN cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0;
+            """),
     ];
 
     public Database(GatewayOptions options)

@@ -37,6 +37,7 @@ public sealed record RequestRecord
     public long OutputTokens { get; init; }
     public long CacheReadTokens { get; init; }
     public long CacheWriteTokens { get; init; }
+    public long CacheWrite1hTokens { get; init; }
     public long ReasoningTokens { get; init; }
     public long ContextTokens { get; init; }
     public int ToolCalls { get; init; }
@@ -167,7 +168,7 @@ public sealed class UsageObserver(
                 Status = ctx.StatusCode, ErrorType = usage.ErrorType ?? (ctx.Error != null ? "upstream_error" : null),
                 StopReason = usage.StopReason, Cancelled = ctx.ClientCancelled,
                 InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens, CacheReadTokens = usage.CacheReadTokens,
-                CacheWriteTokens = usage.CacheWriteTokens, ReasoningTokens = usage.ReasoningTokens, ContextTokens = usage.ContextTokens,
+                CacheWriteTokens = usage.CacheWriteTokens, CacheWrite1hTokens = usage.CacheWrite1hTokens, ReasoningTokens = usage.ReasoningTokens, ContextTokens = usage.ContextTokens,
                 ToolCalls = usage.ToolCalls, Tools = usage.Tools,
                 CostUsd = price != null ? pricing.Cost(price, usage) : 0, Priced = price != null,
                 StartedAt = startedAt, ResponseStartedAt = ctx.ResponseStartedAt?.ToUnixTimeMilliseconds(),

@@ -30,7 +30,8 @@ export function TimeChart({
   data: Timeseries
   format: (v: number) => string
   /** stack = stacked areas (sums), line = independent lines (averages, peaks) */
-  mode: 'stack' | 'line'
+  /** stack = stacked areas (sums), area = overlapping areas from zero (levels), line = independent lines */
+  mode: 'stack' | 'area' | 'line'
   height?: number
   /** Overrides series labels (e.g. metric names when several metrics are plotted). */
   labels?: Record<string, string>
@@ -111,9 +112,9 @@ export function TimeChart({
                 name={s.name}
                 stroke={s.color}
                 fill={s.color}
-                fillOpacity={0.25}
-                stackId="a"
-                type="monotone"
+                fillOpacity={mode === 'area' ? 0.18 : 0.25}
+                stackId={mode === 'stack' ? 'a' : undefined}
+                type={mode === 'area' ? 'stepAfter' : 'monotone'}
                 isAnimationActive={false}
               />
             ))}

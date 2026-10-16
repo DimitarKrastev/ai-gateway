@@ -11,6 +11,8 @@ public sealed class ResponseUsage
     public long OutputTokens { get; set; }
     public long CacheReadTokens { get; set; }
     public long CacheWriteTokens { get; set; }
+    /// <summary>Of <see cref="CacheWriteTokens"/>, those written with the 1-hour TTL (Anthropic <c>cache_creation</c>).</summary>
+    public long CacheWrite1hTokens { get; set; }
     public long ReasoningTokens { get; set; }
     /// <summary>Prompt size the model saw: Anthropic input + cache read + cache write; OpenAI total input tokens.</summary>
     public long ContextTokens { get; set; }
@@ -389,6 +391,7 @@ public sealed class ResponseUsageParser
         if (Num(u, "output_tokens") is { } o) Usage.OutputTokens = o;
         if (Num(u, "cache_read_input_tokens") is { } cr) Usage.CacheReadTokens = cr;
         if (Num(u, "cache_creation_input_tokens") is { } cw) Usage.CacheWriteTokens = cw;
+        if (Obj(u, "cache_creation") is { } cc && Num(cc, "ephemeral_1h_input_tokens") is { } cw1h) Usage.CacheWrite1hTokens = cw1h;
         Usage.ContextTokens = Usage.InputTokens + Usage.CacheReadTokens + Usage.CacheWriteTokens;
         Usage.HasUsage = true;
     }

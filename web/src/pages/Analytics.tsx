@@ -99,7 +99,7 @@ export default function Analytics() {
   const [metric, setMetric] = useState('cost')
   const [groupBy, setGroupBy] = useState('model')
   const [bucket, setBucket] = useState('auto')
-  const [chartMode, setChartMode] = useState<'auto' | 'stack' | 'line'>('auto')
+  const [chartMode, setChartMode] = useState<'auto' | 'stack' | 'area' | 'line'>('auto')
   const [cumulative, setCumulative] = useState(false)
   const [by, setBy] = useState('model')
   const [tpsStat, setTpsStat] = useState<TpsStat>('tokensPerSecond')
@@ -107,12 +107,14 @@ export default function Analytics() {
 
   const base = { from, to, timeBasis, ...f }
   const def = metricDef(metric)
-  const mode = chartMode === 'auto' ? (def.kind === 'sum' ? 'stack' : 'line') : chartMode
+  const mode = chartMode === 'auto' ? (def.kind === 'sum' ? 'stack' : def.kind === 'level' ? 'area' : 'line') : chartMode
   // "Agent (each instance)" plots every request of every agent; metrics without a per-request value fall back to buckets.
   const perAgent = groupBy === 'agentId' && !!def.perRequest
 
   const accounts = useApi<Account[]>('/api/accounts', undefined, ['accounts'])
-  const bucketQ = live.on ? '1s' : bucket
+  // Live bars stay wide enough to see: 1 s over the last minute, 5 s over 5 and 10 minutes.
+  const liveBucketMs = live.window === '1m' ? 1000 : 5000
+  const bucketQ = live.on ? (liveBucketMs === 1000 ? '1s' : '5s') : bucket
   const models = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, timeBasis, by: 'model', limit: 100 })}`, undefined, lt)
   const agents = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, timeBasis, by: 'agent', limit: 100 })}`, undefined, lt)
   const modes = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, timeBasis, by: 'speedMode', limit: 20 })}`, undefined, lt)
@@ -332,9 +334,9 @@ export default function Analytics() {
                   </select>
                 </label>}
                 <div className="seg" role="group" aria-label="Chart type">
-                  {(['auto', 'stack', 'line'] as const).map((m) => (
+                  {(['auto', 'stack', 'area', 'line'] as const).map((m) => (
                     <button key={m} className={chartMode === m ? 'on' : ''} onClick={() => setChartMode(m)}>
-                      {m === 'auto' ? 'Auto' : m === 'stack' ? 'Stacked' : 'Lines'}
+                      {m === 'auto' ? 'Auto' : m === 'stack' ? 'Stacked' : m === 'area' ? 'Areas' : 'Lines'}
                     </button>
                   ))}
                 </div>
@@ -346,7 +348,7 @@ export default function Analytics() {
         {live.on ? (
           <LiveChart
             series={mainLive}
-            bucketMs={perAgent ? null : 1000}
+            bucketMs={perAgent ? null : liveBucketMs}
             mode={perAgent ? 'line' : mode}
             windowMs={liveMs}
             format={def.format}
@@ -380,7 +382,7 @@ export default function Analytics() {
           }
         >
           {live.on ? (
-            <LiveChart series={tpsLive} bucketMs={1000} mode="line" windowMs={liveMs} format={fmtTps} axisFormat={fmtCompact} height={260} />
+            <LiveChart series={tpsLive} bucketMs={liveBucketMs} mode="line" windowMs={liveMs} format={fmtTps} axisFormat={fmtCompact} height={260} />
           ) : (
             <Async state={tpsOverTime}>{(d) => <TimeChart data={d} mode="line" format={fmtTps} axisFormat={fmtCompact} height={260} />}</Async>
           )}

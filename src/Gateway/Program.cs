@@ -50,6 +50,9 @@ builder.Services.AddAuthorization();
 var app = builder.Build();
 
 app.Services.GetRequiredService<Database>().Migrate();
+// Corrected or newly configured prices apply to stored history too.
+var repriced = app.Services.GetRequiredService<Gateway.Usage.PricingTable>().RepriceIfChanged(app.Services.GetRequiredService<Database>());
+if (repriced > 0) app.Logger.LogInformation("Recomputed the cost of {Rows} recorded requests for the current price table", repriced);
 app.Services.GetRequiredService<AdminCredentials>();
 
 app.UseAuthentication();
