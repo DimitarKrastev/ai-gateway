@@ -117,7 +117,7 @@ public sealed class UsageObserver(
         s.FirstByteAt ??= now;
         s.Parser?.Feed(chunk);
         if (s.FirstTokenAt == null && s.Parser is { OutputStarted: true }) s.FirstTokenAt = now;
-        if (s.Parser is { } p) Meter(s, p.StreamedChars / 4.0, p.Usage.ContextTokens);
+        if (s.Parser is { } p) Meter(s, p.StreamedChars / 4.0, p.Usage.ContextTokens, ctx.StartedAt.ToUnixTimeMilliseconds());
     }
 
     public Task OnCompletedAsync(ProxiedRequestContext ctx)
@@ -185,10 +185,11 @@ public sealed class UsageObserver(
         return Task.CompletedTask;
     }
 
-    private void Meter(State s, double output, double prompt)
+    /// <summary>Streamed output counts now; prompt tokens count at the second the request was sent, whenever reported.</summary>
+    private void Meter(State s, double output, double prompt, long startedAtMs)
     {
         if (output > s.MeteredOutput) { meter.AddOutput(output - s.MeteredOutput); s.MeteredOutput = output; }
-        if (prompt > s.MeteredPrompt) { meter.AddPrompt(prompt - s.MeteredPrompt); s.MeteredPrompt = prompt; }
+        if (prompt > s.MeteredPrompt) { meter.AddPrompt(prompt - s.MeteredPrompt, startedAtMs); s.MeteredPrompt = prompt; }
     }
 
     /// <summary>Speed values come from client/provider payloads; keep them short.</summary>
