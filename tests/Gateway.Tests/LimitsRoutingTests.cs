@@ -473,6 +473,35 @@ public class LimitsRoutingTests
     }
 
     [Fact]
+    public async Task Reset_on_the_account_that_just_answered_429_is_considered()
+    {
+        // Exhaustion discovered mid-request: the bound account answers 429, the other one is already known exhausted.
+        // The 429 account holds the credit closest to expiring, so it must be redeemed even though it was just excluded.
+        await using var fake = await StartFake();
+        var now = DateTimeOffset.UtcNow;
+        var a = fake.Anthropic.Register(new FakeAccountSpec(Kind: "oauth", Windows: [FiveHour(10, TimeSpan.FromHours(3))],
+            Resets: [new("a-reset", now.AddDays(2))]));
+        var b = fake.Anthropic.Register(new FakeAccountSpec(Kind: "oauth", Windows: [FiveHour(100, TimeSpan.FromHours(1))],
+            Resets: [new("b-reset", now.AddDays(5))]));
+        var (gw, admin, key) = await Setup(fake);
+        using var _ = gw;
+        await admin.PutAsJsonAsync("/api/settings", new { maximizeUtilization = true });
+        var aId = await gw.LinkAsync(admin, Claude(a));
+        var bId = await gw.LinkAsync(admin, Claude(b));
+        await Refresh(admin, aId, bId);
+        var client = gw.CreateClient();
+
+        Assert.Equal(HttpStatusCode.OK, await Send(client, key, S1));
+        Assert.Equal(a.Id, LastAccount(fake));
+        fake.Anthropic.Patch(a.Id, new FakeAccountSpec(Windows: [new("five_hour", 100)]));
+
+        Assert.Equal(HttpStatusCode.OK, await Send(client, key, S1));
+        Assert.Equal(a.Id, LastAccount(fake));
+        Assert.Equal(1, fake.Anthropic.Get(a.Id)!.RedeemedResets);
+        Assert.Equal(0, fake.Anthropic.Get(b.Id)!.RedeemedResets);
+    }
+
+    [Fact]
     public async Task Without_auto_resets_an_exhausted_provider_answers_429()
     {
         await using var fake = await StartFake();

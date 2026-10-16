@@ -35,12 +35,15 @@ public sealed class PolicyAccountSelector(
         try
         {
             var now = time.GetUtcNow();
-            var candidates = accounts.List(req.Provider)
-                .Where(a => a.Enabled && UpstreamRouter.IsEligible(a.Kind, req.UpstreamPath) && !req.ExcludedAccountIds.Contains(a.Id))
+            var eligible = accounts.List(req.Provider)
+                .Where(a => a.Enabled && UpstreamRouter.IsEligible(a.Kind, req.UpstreamPath))
                 .ToList();
-            if (candidates.Count == 0) return null;
+            // Accounts excluded for this request just answered 429; they can't serve it unless a reset is used on them,
+            // so they stay in the reset pool (otherwise the credit closest to expiring could be skipped).
+            var candidates = eligible.Where(a => !req.ExcludedAccountIds.Contains(a.Id)).ToList();
+            if (candidates.Count == 0 && !(settings.AutoUseResets && eligible.Count > 0)) return null;
 
-            var lim = limits.Load(candidates.Select(a => a.Id).ToList());
+            var lim = limits.Load(eligible.Select(a => a.Id).ToList());
             var binding = bindings.Get(req.Provider, req.SessionId);
             var bound = binding == null ? null : candidates.FirstOrDefault(a => a.Id == binding.AccountId);
             var available = candidates.Where(a => !lim[a.Id].IsExhausted(now)).ToList();
@@ -52,9 +55,9 @@ public sealed class PolicyAccountSelector(
             if (settings.MaximizeUtilization)
             {
                 var pool = available.Where(a => a.IsOAuth).ToList();
-                if (pool.Count == 0 && candidates.Any(a => a.IsOAuth) && settings.AutoUseResets)
+                if (pool.Count == 0 && eligible.Any(a => a.IsOAuth) && settings.AutoUseResets)
                 {
-                    resetAccount = await TryUseResetAsync(req, candidates.Where(a => a.IsOAuth).ToList(), ct);
+                    resetAccount = await TryUseResetAsync(req, eligible.Where(a => a.IsOAuth).ToList(), ct);
                     if (resetAccount != null) pool = [resetAccount];
                 }
                 if (pool.Count == 0) pool = available;
@@ -92,7 +95,7 @@ public sealed class PolicyAccountSelector(
                     .ThenBy(a => a.Id)
                     .FirstOrDefault();
                 if (chosen == null && settings.AutoUseResets)
-                    chosen = resetAccount = await TryUseResetAsync(req, candidates, ct);
+                    chosen = resetAccount = await TryUseResetAsync(req, eligible, ct);
             }
 
             if (resetAccount != null && chosen?.Id == resetAccount.Id)
@@ -105,6 +108,7 @@ public sealed class PolicyAccountSelector(
             {
                 // Everything is exhausted and no reset could be used: send the request to the account expected to recover
                 // first. If our picture is stale the request succeeds; otherwise the provider's 429 reaches the agent.
+                if (candidates.Count == 0) return null;
                 chosen = bound ?? candidates
                     .OrderBy(a => lim[a.Id].ExhaustedUntil(now) ?? now)
                     .ThenBy(a => a.Priority).ThenBy(a => a.Id)
