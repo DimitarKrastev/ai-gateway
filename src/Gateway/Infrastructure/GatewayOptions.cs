@@ -11,6 +11,7 @@ public sealed class GatewayOptions
     public string DataDir { get; init; } = "data";
     public string WebRoot { get; init; } = "";
     public string? AdminPassword { get; init; }
+    public UpstreamOptions Upstreams { get; init; } = new();
 
     public string DatabasePath => Path.Combine(DataDir, "gateway.db");
 
@@ -33,8 +34,37 @@ public sealed class GatewayOptions
             DataDir = dataDir,
             WebRoot = Path.GetFullPath(webRoot),
             AdminPassword = Get("AdminPassword", "GATEWAY_ADMIN_PASSWORD"),
+            Upstreams = new UpstreamOptions
+            {
+                AnthropicApi = Url(Get("Upstreams:AnthropicApi", "GATEWAY_UPSTREAM_ANTHROPIC_API"), UpstreamOptions.Defaults.AnthropicApi),
+                AnthropicAuth = Url(Get("Upstreams:AnthropicAuth", "GATEWAY_UPSTREAM_ANTHROPIC_AUTH"), UpstreamOptions.Defaults.AnthropicAuth),
+                OpenAIApi = Url(Get("Upstreams:OpenAIApi", "GATEWAY_UPSTREAM_OPENAI_API"), UpstreamOptions.Defaults.OpenAIApi),
+                ChatGptBackend = Url(Get("Upstreams:ChatGptBackend", "GATEWAY_UPSTREAM_CHATGPT"), UpstreamOptions.Defaults.ChatGptBackend),
+                OpenAIAuth = Url(Get("Upstreams:OpenAIAuth", "GATEWAY_UPSTREAM_OPENAI_AUTH"), UpstreamOptions.Defaults.OpenAIAuth),
+            },
         };
     }
 
+    private static string Url(string? value, string fallback) => (value ?? fallback).TrimEnd('/');
+
     private static string? NonEmpty(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
+}
+
+/// <summary>
+/// Provider base URLs (no trailing slash). Point all of them at the fake providers in tests and e2e runs.
+/// </summary>
+public sealed class UpstreamOptions
+{
+    public static readonly UpstreamOptions Defaults = new();
+
+    /// <summary>Anthropic Messages API (<c>/v1/messages</c>, <c>/api/oauth/usage</c>).</summary>
+    public string AnthropicApi { get; init; } = "https://api.anthropic.com";
+    /// <summary>Anthropic OAuth token endpoint host (<c>/v1/oauth/token</c>).</summary>
+    public string AnthropicAuth { get; init; } = "https://console.anthropic.com";
+    /// <summary>OpenAI API (<c>/v1/responses</c>, <c>/v1/chat/completions</c>).</summary>
+    public string OpenAIApi { get; init; } = "https://api.openai.com";
+    /// <summary>ChatGPT backend used by Codex with a ChatGPT login (<c>/backend-api/codex/responses</c>).</summary>
+    public string ChatGptBackend { get; init; } = "https://chatgpt.com";
+    /// <summary>OpenAI OAuth token endpoint host (<c>/oauth/token</c>).</summary>
+    public string OpenAIAuth { get; init; } = "https://auth.openai.com";
 }

@@ -18,6 +18,40 @@ public sealed class Database
                 value TEXT NOT NULL
             );
             """),
+        // Timestamps are unix milliseconds (INTEGER).
+        (2, """
+            CREATE TABLE accounts (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                name            TEXT NOT NULL,
+                provider        TEXT NOT NULL,
+                kind            TEXT NOT NULL,
+                enabled         INTEGER NOT NULL DEFAULT 1,
+                priority        INTEGER NOT NULL DEFAULT 100,
+                credentials_enc TEXT NOT NULL,
+                created_at      INTEGER NOT NULL,
+                updated_at      INTEGER NOT NULL
+            );
+            CREATE TABLE client_keys (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                name         TEXT NOT NULL,
+                key_hash     TEXT NOT NULL UNIQUE,
+                prefix       TEXT NOT NULL,
+                created_at   INTEGER NOT NULL,
+                last_used_at INTEGER,
+                revoked_at   INTEGER
+            );
+            CREATE TABLE session_bindings (
+                provider      TEXT NOT NULL,
+                session_id    TEXT NOT NULL,
+                account_id    INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                client_key_id INTEGER,
+                first_seen    INTEGER NOT NULL,
+                last_seen     INTEGER NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (provider, session_id)
+            );
+            CREATE INDEX ix_session_bindings_account ON session_bindings(account_id, last_seen);
+            """),
     ];
 
     public Database(GatewayOptions options)

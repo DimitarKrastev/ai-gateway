@@ -1,5 +1,8 @@
+using Gateway.Accounts;
 using Gateway.Auth;
+using Gateway.ClientKeys;
 using Gateway.Infrastructure;
+using Gateway.Proxy;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.FileProviders;
@@ -9,10 +12,14 @@ var builder = WebApplication.CreateBuilder(args);
 var options = GatewayOptions.FromConfiguration(builder.Configuration, builder.Environment.ContentRootPath);
 Directory.CreateDirectory(options.DataDir);
 builder.WebHost.UseUrls($"http://{options.BindAddress}:{options.Port}");
+// Agent requests carry whole conversations; allow large bodies.
+builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize = 256L * 1024 * 1024);
 
 builder.Services.AddSingleton(options);
 builder.Services.AddSingleton<Database>();
 builder.Services.AddSingleton<AdminCredentials>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddGatewayProxy();
 
 builder.Services.AddDataProtection()
     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(options.DataDir, "keys")))
@@ -48,6 +55,9 @@ app.UseStaticFiles(new StaticFileOptions { FileProvider = webFiles });
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", time = DateTimeOffset.UtcNow }));
 app.MapAuthEndpoints();
+app.MapAccountEndpoints();
+app.MapClientKeyEndpoints();
+app.MapProxyEndpoints();
 
 // SPA fallback for client-side routes; API and proxy prefixes never fall back to the UI.
 app.MapFallback(async ctx =>

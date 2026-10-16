@@ -79,7 +79,10 @@ public class AuthTests : IClassFixture<GatewayFactory>
     public async Task Unknown_ui_route_serves_spa_or_404_but_proxy_prefixes_do_not()
     {
         var client = NewClient();
-        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync("/anthropic/unknown-path")).StatusCode);
+        // Proxy prefixes are handled by the proxy (which wants a gateway key), never by the SPA fallback.
+        var proxied = await client.GetAsync("/anthropic/unknown-path");
+        Assert.Equal(HttpStatusCode.Unauthorized, proxied.StatusCode);
+        Assert.Equal("application/json", proxied.Content.Headers.ContentType?.MediaType);
         var ui = await client.GetAsync("/accounts");
         Assert.Contains(ui.StatusCode, new[] { HttpStatusCode.OK, HttpStatusCode.NotFound });
     }
