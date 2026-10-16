@@ -300,8 +300,9 @@ Notes:
   second). The top bar shows **Live** while connected; without the connection pages fall back to periodic refresh.
   The Overview's **Live throughput** panel is a scrolling one-second chart of tokens generated (↓) and prompt tokens
   sent (↑) across all accounts, over the last 1, 5 or 10 minutes, plus requests in flight. Output is counted while it
-  streams (streamed text ÷ 4, settled to the reported total when the request completes; hidden reasoning appears at
-  completion); prompt tokens when the provider reports them. It is kept in memory only (`GET /api/analytics/meter`).
+  streams (streamed text ÷ 4); when the request completes, output that was not streamed (hidden reasoning, estimate
+  error) is spread over its generation time and prompt tokens are placed at the second the request was sent, and the
+  corrected seconds are pushed again. It is kept in memory only (`GET /api/analytics/meter`).
   For second-level detail pick the **5m** or **15m** range (auto bucket 5 s; **1h** gets 15 s) or a 5s/15s/30s bucket on
   the Analytics page.
 

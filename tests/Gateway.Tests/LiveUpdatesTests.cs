@@ -47,6 +47,22 @@ public class LiveUpdatesTests
         Assert.Equal([500.0, 0, 0], samples.Select(s => s.Prompt));
     }
 
+    [Fact]
+    public void Late_output_is_spread_over_the_generation_and_revised_seconds_are_reported_once()
+    {
+        var time = new MutableTime(DateTimeOffset.FromUnixTimeSeconds(2_000_010));
+        var meter = new LiveMeter(time);
+        meter.AddOutputSpread(40, 2_000_006_000, 2_000_009_500); // 4 seconds already pushed
+        meter.AddPrompt(1000, 2_000_006_200);
+
+        var revised = meter.TakeRevised();
+        Assert.Equal([2_000_006_000L, 2_000_007_000L, 2_000_008_000L, 2_000_009_000L], revised.Select(r => r.T));
+        Assert.All(revised, r => Assert.Equal(10.0, r.Output));
+        Assert.Equal(1000.0, revised[0].Prompt);
+        Assert.Empty(meter.TakeRevised());
+        Assert.Equal(40.0, meter.Range(2_000_000).Sum(r => r.Output));
+    }
+
     private sealed class MutableTime(DateTimeOffset now) : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = now;

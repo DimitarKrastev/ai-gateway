@@ -62,21 +62,60 @@ public sealed class LiveMeter(TimeProvider time)
     private readonly double[] _output = new double[Seconds];
     private readonly double[] _prompt = new double[Seconds];
     private readonly Lock _gate = new();
+    // Completed seconds changed after they were pushed (late corrections); pushed again with the next tick.
+    private readonly HashSet<long> _revised = new();
 
-    public void AddOutput(double tokens) => Add(tokens, 0);
-    public void AddPrompt(double tokens) => Add(0, tokens);
+    /// <summary>Output tokens generated now.</summary>
+    public void AddOutput(double tokens) => Add(time.GetUtcNow().ToUnixTimeSeconds(), tokens, 0);
 
-    private void Add(double output, double prompt)
+    /// <summary>Prompt tokens sent at <paramref name="atMs"/> (now if null).</summary>
+    public void AddPrompt(double tokens, long? atMs = null) =>
+        Add(atMs is { } ms ? ms / 1000 : time.GetUtcNow().ToUnixTimeSeconds(), 0, tokens);
+
+    /// <summary>
+    /// Output tokens generated somewhere in [<paramref name="fromMs"/>, <paramref name="toMs"/>] that were not streamed
+    /// (hidden reasoning, or the gap between the streamed-text estimate and the reported total): spread evenly over those
+    /// seconds rather than shown as a spike when the request completes.
+    /// </summary>
+    public void AddOutputSpread(double tokens, long fromMs, long toMs)
+    {
+        if (tokens <= 0) return;
+        var first = fromMs / 1000;
+        var last = Math.Max(first, toMs / 1000);
+        var per = tokens / (last - first + 1);
+        for (var sec = first; sec <= last; sec++) Add(sec, per, 0);
+    }
+
+    private void Add(long sec, double output, double prompt)
     {
         if (output <= 0 && prompt <= 0) return;
-        var sec = time.GetUtcNow().ToUnixTimeSeconds();
+        var now = time.GetUtcNow().ToUnixTimeSeconds();
+        if (sec > now || sec <= now - Seconds) sec = now;
         var i = (int)(sec % Seconds);
         lock (_gate)
         {
             if (_second[i] != sec) { _second[i] = sec; _output[i] = 0; _prompt[i] = 0; }
             if (output > 0) _output[i] += output;
             if (prompt > 0) _prompt[i] += prompt;
+            if (sec < now) _revised.Add(sec);
         }
+    }
+
+    /// <summary>Completed seconds that changed after they ended, oldest first; each is reported once.</summary>
+    public IReadOnlyList<MeterSample> TakeRevised()
+    {
+        lock (_gate)
+        {
+            var result = _revised.Order().Select(Sample).ToList();
+            _revised.Clear();
+            return result;
+        }
+    }
+
+    private MeterSample Sample(long sec)
+    {
+        var i = (int)(sec % Seconds);
+        return _second[i] == sec ? new MeterSample(sec * 1000, Math.Round(_output[i], 1), _prompt[i]) : new MeterSample(sec * 1000, 0, 0);
     }
 
     /// <summary>Completed seconds from <paramref name="fromSec"/> up to (not including) the current second; quiet seconds are 0.</summary>
@@ -87,11 +126,7 @@ public sealed class LiveMeter(TimeProvider time)
         var result = new List<MeterSample>((int)Math.Max(0, now - fromSec));
         lock (_gate)
         {
-            for (var sec = fromSec; sec < now; sec++)
-            {
-                var i = (int)(sec % Seconds);
-                result.Add(_second[i] == sec ? new MeterSample(sec * 1000, Math.Round(_output[i], 1), _prompt[i]) : new MeterSample(sec * 1000, 0, 0));
-            }
+            for (var sec = fromSec; sec < now; sec++) result.Add(Sample(sec));
         }
         return result;
     }
@@ -111,7 +146,8 @@ public sealed class LiveBroadcaster(
 {
     public static readonly TimeSpan MinInterval = TimeSpan.FromMilliseconds(250);
 
-    /// <summary>Every second, just after the second ends: that second's throughput sample and the in-flight count.</summary>
+    /// <summary>Every second, just after the second ends: that second's sample, any earlier seconds that were revised
+    /// since, and the in-flight count.</summary>
     private async Task TickMeterAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -121,8 +157,8 @@ public sealed class LiveBroadcaster(
                 var now = time.GetUtcNow().ToUnixTimeMilliseconds();
                 await Task.Delay(TimeSpan.FromMilliseconds(1000 - now % 1000 + 20), time, ct);
                 var sec = time.GetUtcNow().ToUnixTimeSeconds() - 1;
-                if (meter.Range(sec) is [var sample, ..])
-                    await hub.Clients.All.SendAsync("meter", new { sample.T, sample.Output, sample.Prompt, inFlight = live.Count }, ct);
+                var samples = meter.TakeRevised().Where(s => s.T != sec * 1000).Concat(meter.Range(sec).Take(1)).ToList();
+                await hub.Clients.All.SendAsync("meter", new { samples, inFlight = live.Count }, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
             catch (Exception e)

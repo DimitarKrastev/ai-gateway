@@ -42,11 +42,15 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     connection.on('inFlight', (data: Live) => setState((s) => ({ ...s, inFlight: { data, receivedAt: Date.now() } })))
     // A second's sample is pushed just after the second ends, so its arrival dates the gateway clock.
     let skew: number | null = null
-    connection.on('meter', (m: MeterSample & { inFlight: number }) => {
-      const observed = Date.now() - (m.t + 1000)
-      skew = skew === null ? observed : skew * 0.8 + observed * 0.2
-      const sk = skew
-      setMeter((s) => ({ samples: mergeMeter(s.samples, [{ t: m.t, output: m.output, prompt: m.prompt }]), inFlight: m.inFlight, skew: sk }))
+    // Each push: the second that just ended (last) plus earlier seconds revised by late corrections.
+    connection.on('meter', (m: { samples: MeterSample[]; inFlight: number }) => {
+      const latest = m.samples[m.samples.length - 1]
+      if (latest) {
+        const observed = Date.now() - (latest.t + 1000)
+        skew = skew === null ? observed : skew * 0.8 + observed * 0.2
+      }
+      const sk = skew ?? 0
+      setMeter((s) => ({ samples: mergeMeter(s.samples, m.samples), inFlight: m.inFlight, skew: sk }))
     })
     // History so the chart is full right away (and after a reconnect, the gap is filled).
     const loadMeter = () =>

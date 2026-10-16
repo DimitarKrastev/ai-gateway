@@ -128,8 +128,22 @@ public sealed class UsageObserver(
         {
             var info = s?.Info ?? RequestInfo.Parse(ctx);
             var usage = s?.Parser?.Complete() ?? new ResponseUsage();
-            // Settle the live meter on the reported totals (the streamed estimate never takes tokens back).
-            if (s != null) Meter(s, usage.OutputTokens, usage.ContextTokens);
+            // Settle the live meter on the reported totals: output not seen streaming (hidden reasoning, estimate error) is
+            // spread over the generation time, prompt tokens reported only now are placed when the request was sent.
+            if (s != null)
+            {
+                var now = time.GetUtcNow().ToUnixTimeMilliseconds();
+                if (usage.OutputTokens > s.MeteredOutput)
+                {
+                    meter.AddOutputSpread(usage.OutputTokens - s.MeteredOutput, s.FirstByteAt ?? ctx.StartedAt.ToUnixTimeMilliseconds(), now);
+                    s.MeteredOutput = usage.OutputTokens;
+                }
+                if (usage.ContextTokens > s.MeteredPrompt)
+                {
+                    meter.AddPrompt(usage.ContextTokens - s.MeteredPrompt, ctx.StartedAt.ToUnixTimeMilliseconds());
+                    s.MeteredPrompt = usage.ContextTokens;
+                }
+            }
             var model = usage.Model ?? info.Model;
             var price = usage.HasUsage ? pricing.Find(model) : null;
             var agent = s != null ? s.Agent : agents.Identify(ctx, info);
