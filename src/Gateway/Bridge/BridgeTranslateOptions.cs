@@ -49,7 +49,8 @@ public sealed class BridgeTranslationException(string message) : Exception(messa
 /// <param name="CachedTokens">Input tokens served from the prompt cache.</param>
 /// <param name="OutputTokens">Output tokens (includes reasoning).</param>
 /// <param name="ReasoningTokens">Reasoning tokens (subset of output).</param>
-public sealed record BridgeUsage(long InputTokens, long CachedTokens, long OutputTokens, long ReasoningTokens)
+/// <param name="WebSearchRequests">Web searches the model ran (<c>web_search_call</c> items).</param>
+public sealed record BridgeUsage(long InputTokens, long CachedTokens, long OutputTokens, long ReasoningTokens, long WebSearchRequests = 0)
 {
     public static BridgeUsage? From(JsonNode? usage)
     {
@@ -62,13 +63,19 @@ public sealed record BridgeUsage(long InputTokens, long CachedTokens, long Outpu
     }
 
     /// <summary>Anthropic usage: <c>input_tokens</c> excludes cache reads; OpenAI has no cache writes.</summary>
-    public JsonObject ToAnthropic() => new()
+    public JsonObject ToAnthropic()
     {
-        ["input_tokens"] = Math.Max(0L, InputTokens - CachedTokens),
-        ["cache_creation_input_tokens"] = 0L,
-        ["cache_read_input_tokens"] = CachedTokens,
-        ["output_tokens"] = OutputTokens,
-    };
+        var usage = new JsonObject
+        {
+            ["input_tokens"] = Math.Max(0L, InputTokens - CachedTokens),
+            ["cache_creation_input_tokens"] = 0L,
+            ["cache_read_input_tokens"] = CachedTokens,
+            ["output_tokens"] = OutputTokens,
+        };
+        if (WebSearchRequests > 0)
+            usage["server_tool_use"] = new JsonObject { ["web_search_requests"] = WebSearchRequests, ["web_fetch_requests"] = 0L };
+        return usage;
+    }
 
     public static JsonObject ZeroAnthropic() => new BridgeUsage(0, 0, 0, 0).ToAnthropic();
 }

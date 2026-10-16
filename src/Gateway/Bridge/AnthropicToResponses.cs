@@ -11,7 +11,8 @@ namespace Gateway.Bridge;
 /// <item>messages → input items: user text/images/PDFs → <c>message</c> with <c>input_*</c> parts; assistant text →
 /// <c>output_text</c>; <c>tool_use</c> → <c>function_call</c>; <c>tool_result</c> → <c>function_call_output</c> (placed
 /// before the rest of that user turn); bridge-enveloped <c>thinking</c> → <c>reasoning</c> with encrypted content.</item>
-/// <item>tools → function tools (server tools are dropped); tool_choice / disable_parallel_tool_use mapped.</item>
+/// <item>tools → function tools; the web search server tool → the built-in <c>web_search</c> tool (<see cref="BridgeWebSearch"/>);
+/// other server tools are dropped. tool_choice / disable_parallel_tool_use mapped.</item>
 /// <item>thinking / output_config.effort → <c>reasoning</c> {effort, summary}.</item>
 /// <item>Dropped: temperature, top_p, top_k, stop_sequences, cache_control, context_management, metadata, betas.</item>
 /// </list>
@@ -45,7 +46,7 @@ public static class AnthropicToResponses
         if (tools.Count > 0)
         {
             body["tools"] = tools;
-            body["tool_choice"] = ToolChoice(toolChoice, names);
+            body["tool_choice"] = ToolChoice(toolChoice, names, tools);
             body["parallel_tool_calls"] = parallel;
         }
         else if (o.CodexBackend)
@@ -62,6 +63,8 @@ public static class AnthropicToResponses
         // store:false means nothing is kept server side; the encrypted reasoning travels in the thinking signatures.
         body["store"] = false;
         body["include"] = new JsonArray("reasoning.encrypted_content");
+        // The searched pages, for the web_search_tool_result blocks.
+        if (tools.Any(t => Str(t?["type"]) == "web_search")) ((JsonArray)body["include"]!).Add("web_search_call.action.sources");
 
         var clientStream = Bool(req["stream"]) == true;
         body["stream"] = o.CodexBackend || clientStream;
@@ -327,6 +330,11 @@ public static class AnthropicToResponses
             var type = Str(t["type"]);
             var name = Str(t["name"]);
             if (name is null) continue;
+            if (BridgeWebSearch.IsServerTool(t))
+            {
+                result.Add(BridgeWebSearch.UpstreamTool(t, dropped));
+                continue;
+            }
             if (type is not (null or "custom"))
             {
                 dropped.Add($"{name} ({type})");
@@ -344,10 +352,12 @@ public static class AnthropicToResponses
         return result;
     }
 
-    private static JsonNode ToolChoice(JsonObject? choice, Dictionary<string, string> names) => Str(choice?["type"]) switch
+    private static JsonNode ToolChoice(JsonObject? choice, Dictionary<string, string> names, JsonArray tools) => Str(choice?["type"]) switch
     {
         "any" => "required",
         "none" => "none",
+        // Forcing the web search server tool: the built-in tool cannot be named, so require a tool call.
+        "tool" when Str(choice!["name"]) == BridgeWebSearch.ToolName && tools.All(t => Str(t?["name"]) != BridgeWebSearch.ToolName) => "required",
         "tool" when Str(choice!["name"]) is { } n => new JsonObject { ["type"] = "function", ["name"] = UpstreamName(n, names) },
         _ => "auto",
     };

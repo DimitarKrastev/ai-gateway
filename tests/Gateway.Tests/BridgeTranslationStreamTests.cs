@@ -100,7 +100,7 @@ public class BridgeTranslationStreamTests
                     var idx = e.Data["index"]!.GetValue<int>();
                     Assert.Equal(blocks.Count, idx);
                     var cb = e.Data["content_block"]!.AsObject().DeepClone().AsObject();
-                    if (cb["type"]!.GetValue<string>() == "tool_use")
+                    if (cb["type"]!.GetValue<string>() is "tool_use" or "server_tool_use")
                     {
                         Assert.Empty(cb["input"]!.AsObject());
                         cb["partial"] = "";
@@ -118,7 +118,7 @@ public class BridgeTranslationStreamTests
                         case "text_delta": Assert.Equal("text", bt); Append(b, "text", d["text"]!); break;
                         case "thinking_delta": Assert.Equal("thinking", bt); Append(b, "thinking", d["thinking"]!); break;
                         case "signature_delta": Assert.Equal("thinking", bt); b["signature"] = d["signature"]!.GetValue<string>(); break;
-                        case "input_json_delta": Assert.Equal("tool_use", bt); Append(b, "partial", d["partial_json"]!); break;
+                        case "input_json_delta": Assert.Contains(bt, new[] { "tool_use", "server_tool_use" }); Append(b, "partial", d["partial_json"]!); break;
                         default: Assert.Fail("unexpected delta " + d.ToJsonString()); break;
                     }
                     break;
@@ -186,6 +186,73 @@ public class BridgeTranslationStreamTests
         Assert.False(whole.Failed);
         Assert.True(whole.HasToolUse);
         Assert.Equal(4, whole.BlockCount);
+    }
+
+    /// <summary>A web search turn as the ChatGPT Codex backend streams it (shape captured from a real response).</summary>
+    private static readonly string WebSearchStream = Sse(
+        """{"type":"response.created","response":{"id":"resp_ws","model":"gpt-5.6-luna","status":"in_progress","output":[]}}""",
+        """{"type":"response.output_item.added","output_index":0,"item":{"id":"ws_abc","type":"web_search_call","status":"in_progress"}}""",
+        """{"type":"response.web_search_call.in_progress","output_index":0,"item_id":"ws_abc"}""",
+        """{"type":"response.web_search_call.searching","output_index":0,"item_id":"ws_abc"}""",
+        """{"type":"response.web_search_call.completed","output_index":0,"item_id":"ws_abc"}""",
+        """{"type":"response.output_item.done","output_index":0,"item":{"id":"ws_abc","type":"web_search_call","status":"completed","action":{"type":"search","query":"Donald Trump latest news","queries":["Donald Trump latest news"],"sources":[{"type":"url","url":"https://www.axios.com/"},{"type":"url","url":"https://www.axios.com///"},{"type":"url","url":"https://www.cbsnews.com/tag/donald-trump/"}]}}}""",
+        """{"type":"response.output_item.added","output_index":1,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}""",
+        """{"type":"response.content_part.added","item_id":"msg_1","output_index":1,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}""",
+        """{"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":"Trump is campaigning ([axios.com](https://www.axios.com/?utm_source=openai))."}""",
+        """{"type":"response.output_text.annotation.added","item_id":"msg_1","output_index":1,"content_index":0,"annotation_index":0,"annotation":{"type":"url_citation","start_index":21,"end_index":70,"title":"Axios","url":"https://www.axios.com/?utm_source=openai"}}""",
+        """{"type":"response.output_text.done","item_id":"msg_1","output_index":1,"content_index":0,"text":"Trump is campaigning ([axios.com](https://www.axios.com/?utm_source=openai))."}""",
+        """{"type":"response.output_item.done","output_index":1,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"Trump is campaigning ([axios.com](https://www.axios.com/?utm_source=openai)).","annotations":[]}]}}""",
+        """{"type":"response.completed","response":{"id":"resp_ws","model":"gpt-5.6-luna","status":"completed","usage":{"input_tokens":8498,"input_tokens_details":{"cached_tokens":3712},"output_tokens":286,"output_tokens_details":{"reasoning_tokens":83}},"tool_usage":{"web_search":{"num_requests":1}}}}""");
+
+    [Fact]
+    public void Web_search_call_becomes_server_tool_use_and_web_search_tool_result()
+    {
+        var t = new AnthropicStreamTranslator(Advertised);
+        var events = ParseAnthropic(FeedInChunks(t, Encoding.UTF8.GetBytes(WebSearchStream), _ => 11));
+        var blocks = AssertValidStream(events);
+
+        Assert.Equal(["server_tool_use", "web_search_tool_result", "text"], blocks.Select(b => b["type"]!.GetValue<string>()));
+        var use = blocks[0];
+        Assert.Equal("web_search", use["name"]!.GetValue<string>());
+        Assert.Equal("""{"query":"Donald Trump latest news"}""", use["partial"]!.GetValue<string>());
+        var result = blocks[1];
+        Assert.Equal(use["id"]!.GetValue<string>(), result["tool_use_id"]!.GetValue<string>());
+        var results = result["content"]!.AsArray();
+        Assert.Equal(2, results.Count); // the two axios.com variants are one page
+        Assert.All(results, r => Assert.Equal("web_search_result", r!["type"]!.GetValue<string>()));
+        Assert.Equal("https://www.cbsnews.com/tag/donald-trump/", results[1]!["url"]!.GetValue<string>());
+
+        var usage = events.Single(e => e.Type == "message_delta").Data["usage"]!;
+        Assert.Equal(1, usage["server_tool_use"]!["web_search_requests"]!.GetValue<long>());
+        Assert.Equal("end_turn", t.StopReason);
+        Assert.False(t.HasToolUse);
+    }
+
+    [Fact]
+    public void Non_streaming_client_gets_search_blocks_with_titles_from_citations()
+    {
+        var agg = new AnthropicMessageAggregator(Advertised);
+        agg.Feed(Encoding.UTF8.GetBytes(WebSearchStream));
+        var (status, body) = agg.Complete();
+        Assert.Equal(200, status);
+        var content = body["content"]!.AsArray();
+        Assert.Equal("Donald Trump latest news", content[0]!["input"]!["query"]!.GetValue<string>());
+        Assert.Equal(1, body["usage"]!["server_tool_use"]!["web_search_requests"]!.GetValue<long>());
+
+        var json = ResponsesToAnthropic.FromResponseJson(JsonNode.Parse("""
+            {"id":"resp_ws","status":"completed","output":[
+              {"id":"ws_abc","type":"web_search_call","status":"completed","action":{"type":"search","query":"q","sources":[{"type":"url","url":"https://www.axios.com/"}]}},
+              {"id":"ws_def","type":"web_search_call","status":"failed","action":{"type":"search","query":"q2"}},
+              {"id":"ws_ghi","type":"web_search_call","status":"completed","action":{"type":"open_page","url":"https://x.test/"}},
+              {"id":"msg_1","type":"message","content":[{"type":"output_text","text":"see","annotations":[{"type":"url_citation","title":"Axios","url":"https://www.axios.com/?utm_source=openai"}]}]}],
+             "usage":{"input_tokens":10,"output_tokens":2}}
+            """)!, Advertised);
+        var blocks = json["content"]!.AsArray();
+        Assert.Equal(["server_tool_use", "web_search_tool_result", "server_tool_use", "web_search_tool_result", "text"],
+            blocks.Select(b => b!["type"]!.GetValue<string>()));
+        Assert.Equal("Axios", blocks[1]!["content"]![0]!["title"]!.GetValue<string>());
+        Assert.Equal("web_search_tool_result_error", blocks[3]!["content"]!["type"]!.GetValue<string>());
+        Assert.Equal(2, json["usage"]!["server_tool_use"]!["web_search_requests"]!.GetValue<long>());
     }
 
     private static void Append(JsonObject block, string key, JsonNode value) =>

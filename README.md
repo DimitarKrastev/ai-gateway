@@ -211,8 +211,14 @@ excludes cached tokens, which are reported as `cache_read_input_tokens`; output 
 come back as Anthropic errors (`{"type":"error","error":{…}}`, status kept), mid-stream failures as an SSE `error` event.
 
 **Limitations** (what cannot be translated faithfully):
-- Anthropic server tools (web search, web fetch, code execution) are dropped; Claude Code's WebSearch/WebFetch tools do
-  not work on bridged models. Tool names OpenAI rejects are shortened and mapped back transparently.
+- Web search works: Claude Code's WebSearch sends Anthropic's `web_search` server tool, which becomes OpenAI's built-in
+  `web_search` tool; each search comes back as `server_tool_use` + `web_search_tool_result` (result titles from OpenAI's
+  citations where available, otherwise from the URL) and is counted in `usage.server_tool_use.web_search_requests`.
+  `allowed_domains` and `user_location` carry over; `blocked_domains` and `max_uses` have no OpenAI equivalent.
+- Other Anthropic server tools (web fetch, code execution) are dropped. Claude Code's WebFetch does not depend on them:
+  it fetches pages itself after a domain check against `api.anthropic.com` (not routed through the gateway), so a
+  "Claude Code is unable to fetch from …" error is that check, on any model. Tool names OpenAI rejects are shortened
+  and mapped back transparently.
 - `count_tokens` for bridged models is a local estimate (~4 characters per token); no provider is called.
 - `cache_control` markers are ignored (OpenAI caches prompt prefixes automatically); `cache_creation_input_tokens` is 0.
 - `temperature`, `top_p`, `top_k`, `stop_sequences`, `context_management` and `anthropic-beta` features are dropped.

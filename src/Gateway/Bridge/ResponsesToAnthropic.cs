@@ -23,7 +23,10 @@ public static class ResponsesToAnthropic
 
         var content = new JsonArray();
         var hasToolUse = false;
-        foreach (var item in Arr(r["output"])?.OfType<JsonObject>() ?? [])
+        var searches = 0;
+        var output = Arr(r["output"])?.OfType<JsonObject>().ToList() ?? [];
+        var titles = BridgeWebSearch.TitlesFrom(output);
+        foreach (var item in output)
         {
             switch (Str(item["type"]))
             {
@@ -45,6 +48,11 @@ public static class ResponsesToAnthropic
                         if (!string.IsNullOrEmpty(text)) content.Add(Text("text", text));
                     }
                     break;
+                case "web_search_call" when BridgeWebSearch.Blocks(item, titles) is var (use, result):
+                    content.Add(use);
+                    content.Add(result);
+                    searches++;
+                    break;
                 case "function_call":
                     hasToolUse = true;
                     content.Add(new JsonObject
@@ -58,7 +66,7 @@ public static class ResponsesToAnthropic
             }
         }
 
-        var usage = BridgeUsage.From(r["usage"]);
+        var usage = BridgeUsage.From(r["usage"]) is { } u ? u with { WebSearchRequests = searches } : null;
         return new JsonObject
         {
             ["id"] = MessageId(Str(r["id"])),

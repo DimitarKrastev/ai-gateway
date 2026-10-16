@@ -184,7 +184,7 @@ public class BridgeTranslationTests
     }
 
     [Fact]
-    public void Tools_and_tool_choice_are_mapped_and_server_tools_dropped()
+    public void Tools_and_tool_choice_are_mapped_and_web_search_becomes_the_builtin_tool()
     {
         var r = Translate("""
             {"messages":[{"role":"user","content":"x"}],
@@ -195,7 +195,9 @@ public class BridgeTranslationTests
              "tool_choice":{"type":"any","disable_parallel_tool_use":true}}
             """);
         var tools = r.Body["tools"]!.AsArray();
-        Assert.Equal(2, tools.Count);
+        Assert.Equal(3, tools.Count);
+        Assert.Equal("web_search", S(tools[2]!["type"]));
+        Assert.Contains("web_search_call.action.sources", r.Body["include"]!.AsArray().Select(S));
         Assert.Equal("function", S(tools[0]!["type"]));
         Assert.Equal("Bash", S(tools[0]!["name"]));
         Assert.Equal("Run a command", S(tools[0]!["description"]));
@@ -204,7 +206,7 @@ public class BridgeTranslationTests
         Assert.NotNull(tools[1]!["parameters"]!["properties"]);
         Assert.Equal("required", S(r.Body["tool_choice"]));
         Assert.False(r.Body["parallel_tool_calls"]!.GetValue<bool>());
-        Assert.Equal(["web_search (web_search_20250305)"], r.DroppedTools);
+        Assert.Empty(r.DroppedTools);
 
         Assert.True(Translate("""{"messages":[],"tools":[{"name":"A","input_schema":{"type":"object"}}]}""").Body["parallel_tool_calls"]!.GetValue<bool>());
         Assert.Equal("auto", S(Translate("""{"messages":[],"tools":[{"name":"A","input_schema":{}}],"tool_choice":{"type":"auto"}}""").Body["tool_choice"]));
@@ -212,6 +214,24 @@ public class BridgeTranslationTests
         var forced = Translate("""{"messages":[],"tools":[{"name":"A","input_schema":{}}],"tool_choice":{"type":"tool","name":"A"}}""").Body["tool_choice"]!;
         Assert.Equal("function", S(forced["type"]));
         Assert.Equal("A", S(forced["name"]));
+    }
+
+    [Fact]
+    public void Web_search_options_map_to_the_builtin_tool()
+    {
+        var r = Translate("""
+            {"messages":[{"role":"user","content":"Perform a web search for the query: x"}],
+             "tools":[{"type":"web_search_20250305","name":"web_search","max_uses":8,"allowed_domains":["reuters.com"],
+                       "blocked_domains":["example.com"],"user_location":{"type":"approximate","city":"Sofia","country":"BG"}}],
+             "tool_choice":{"type":"tool","name":"web_search"}}
+            """, Codex);
+        var tool = r.Body["tools"]![0]!;
+        Assert.Equal("web_search", S(tool["type"]));
+        Assert.Equal("reuters.com", S(tool["filters"]!["allowed_domains"]![0]));
+        Assert.Equal("Sofia", S(tool["user_location"]!["city"]));
+        Assert.Equal("approximate", S(tool["user_location"]!["type"]));
+        Assert.Equal(["web_search blocked_domains"], r.DroppedTools);
+        Assert.Equal("required", S(r.Body["tool_choice"]));
     }
 
     [Fact]

@@ -65,6 +65,9 @@ public sealed class AnthropicStreamTranslator(string advertisedId, IReadOnlyDict
     public string? ErrorMessage { get; private set; }
     public bool HasToolUse { get; private set; }
 
+    /// <summary>Web searches the model ran (<c>web_search_call</c> items).</summary>
+    public int WebSearches { get; private set; }
+
     /// <summary>Number of content blocks emitted.</summary>
     public int BlockCount => _nextIndex;
 
@@ -330,6 +333,19 @@ public sealed class AnthropicStreamTranslator(string advertisedId, IReadOnlyDict
                 if (_open is not null && _open.Key.StartsWith(id + ":", StringComparison.Ordinal)) Close(_open);
                 break;
             }
+            case "web_search_call":
+            {
+                // The results arrive whole with the finished item: emit the search and its results as two complete blocks.
+                if (_blocks.ContainsKey(id) || BridgeWebSearch.Blocks(item) is not var (use, result)) break;
+                var input = use["input"]!.ToJsonString();
+                use["input"] = new JsonObject();
+                var b = Open(id, "server_tool_use", use);
+                EmitDelta(b, input);
+                Close(b);
+                Close(Open(id + ":result", "web_search_tool_result", result));
+                WebSearches++;
+                break;
+            }
             case "function_call":
             {
                 var b = _blocks.GetValueOrDefault(id) ?? OpenTool(item);
@@ -353,6 +369,7 @@ public sealed class AnthropicStreamTranslator(string advertisedId, IReadOnlyDict
         }
         if (_open is not null) Close(_open);
         Usage = BridgeUsage.From(response?["usage"]) ?? Usage;
+        if (Usage is not null && WebSearches > 0) Usage = Usage with { WebSearchRequests = WebSearches };
         StopReason = ResponsesToAnthropic.StopReason(incomplete, Str(Obj(response?["incomplete_details"])?["reason"]), HasToolUse);
         _out.Add(new JsonObject
         {
@@ -420,7 +437,7 @@ public sealed class AnthropicStreamTranslator(string advertisedId, IReadOnlyDict
         var delta = b.Kind switch
         {
             "thinking" => new JsonObject { ["type"] = "thinking_delta", ["thinking"] = text },
-            "tool_use" => new JsonObject { ["type"] = "input_json_delta", ["partial_json"] = text },
+            "tool_use" or "server_tool_use" => new JsonObject { ["type"] = "input_json_delta", ["partial_json"] = text },
             _ => new JsonObject { ["type"] = "text_delta", ["text"] = text },
         };
         _out.Add(new JsonObject { ["type"] = "content_block_delta", ["index"] = b.Index, ["delta"] = delta });
@@ -476,7 +493,7 @@ public sealed class AnthropicMessageAggregator(string advertisedId, IReadOnlyDic
                 case "content_block_start":
                     var block = (JsonObject)Obj(e["content_block"])!.DeepClone();
                     _content.Add(block);
-                    if (Str(block["type"]) == "tool_use") _json[_content.Count - 1] = new StringBuilder();
+                    if (Str(block["type"]) is "tool_use" or "server_tool_use") _json[_content.Count - 1] = new StringBuilder();
                     break;
                 case "content_block_delta" when index >= 0 && index < _content.Count:
                     var b = _content[index];
