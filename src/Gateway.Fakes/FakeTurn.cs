@@ -9,8 +9,10 @@ public sealed record FakeToolCall(string Id, string Name, string InputJson);
 
 /// <summary>
 /// What the fake model "answers". Prompt triggers (in the last user text):
-/// <c>[[tool:NAME]]</c> call NAME; <c>[[tools:N]]</c> N parallel calls; <c>[[no-tool]]</c> plain text;
-/// <c>[[error:CODE]]</c> fail with HTTP CODE; <c>[[slow:MS]]</c> delay between stream events; <c>[[out:N]]</c> ~N output tokens.
+/// <c>[[tool:NAME]]</c> call NAME (<c>[[tool:NAME*N]]</c>: N parallel calls of NAME); <c>[[tools:N]]</c> N parallel calls; <c>[[no-tool]]</c> plain text;
+/// <c>[[error:CODE]]</c> fail with HTTP CODE; <c>[[slow:MS]]</c> delay between stream events; <c>[[out:N]]</c> ~N output tokens;
+/// <c>[[tps:N]]</c> generate at N output tokens/second in standard mode (fast/flex modes scale it, see <see cref="FakeOptions"/>);
+/// <c>[[ttft:MS]]</c> wait MS before the first output token.
 /// Default: when tools are offered and the last message is not a tool result, call the first tool; otherwise answer with text.
 /// </summary>
 public sealed partial class FakeTurn
@@ -20,6 +22,8 @@ public sealed partial class FakeTurn
     public int? ErrorStatus { get; private init; }
     public int? DelayMs { get; private init; }
     public int OutputTokens { get; private init; }
+    public double? TokensPerSecond { get; private init; }
+    public int? FirstTokenDelayMs { get; private init; }
 
     public static FakeTurn Plan(string provider, string accountId, string lastUserText, bool lastIsToolResult,
         IReadOnlyList<string> toolNames, string toolIdPrefix)
@@ -29,14 +33,19 @@ public sealed partial class FakeTurn
         var error = Int(ErrorRe());
         var delay = Int(SlowRe());
         var outTokens = Int(OutRe());
-        var named = ToolRe().Match(lastUserText) is { Success: true } tm ? tm.Groups[1].Value : null;
+        var tps = Int(TpsRe());
+        var ttft = Int(TtftRe());
+        var toolMatch = ToolRe().Match(lastUserText);
+        var named = toolMatch.Success ? toolMatch.Groups[1].Value : null;
+        var namedCount = toolMatch.Success && toolMatch.Groups[2].Success ? int.Parse(toolMatch.Groups[2].Value) : 1;
         var count = Int(ToolsRe());
         var noTool = lastUserText.Contains("[[no-tool]]", StringComparison.Ordinal);
 
         var calls = new List<FakeToolCall>();
         if (!noTool)
         {
-            if (named != null) calls.Add(Call(named, toolIdPrefix, 0));
+            if (named != null)
+                for (var i = 0; i < namedCount; i++) calls.Add(Call(named, toolIdPrefix, i));
             else if (count is > 0 && toolNames.Count > 0)
                 for (var i = 0; i < count; i++) calls.Add(Call(toolNames[i % toolNames.Count], toolIdPrefix, i));
             else if (toolNames.Count > 0 && !lastIsToolResult) calls.Add(Call(toolNames[0], toolIdPrefix, 0));
@@ -53,7 +62,11 @@ public sealed partial class FakeTurn
         }
         var output = Tokens.Estimate(text) + calls.Sum(c => Tokens.Estimate(c.InputJson) + 10);
 
-        var turn = new FakeTurn { Text = text, ErrorStatus = error, DelayMs = delay, OutputTokens = output };
+        var turn = new FakeTurn
+        {
+            Text = text, ErrorStatus = error, DelayMs = delay, OutputTokens = output,
+            TokensPerSecond = tps is > 0 ? tps : null, FirstTokenDelayMs = ttft,
+        };
         turn.ToolCalls.AddRange(calls);
         return turn;
     }
@@ -65,8 +78,61 @@ public sealed partial class FakeTurn
     [GeneratedRegex(@"\[\[error:(\d{3})\]\]")] private static partial Regex ErrorRe();
     [GeneratedRegex(@"\[\[slow:(\d+)\]\]")] private static partial Regex SlowRe();
     [GeneratedRegex(@"\[\[out:(\d+)\]\]")] private static partial Regex OutRe();
-    [GeneratedRegex(@"\[\[tool:([A-Za-z0-9_\-\.]+)\]\]")] private static partial Regex ToolRe();
+    [GeneratedRegex(@"\[\[tps:(\d+)\]\]")] private static partial Regex TpsRe();
+    [GeneratedRegex(@"\[\[ttft:(\d+)\]\]")] private static partial Regex TtftRe();
+    [GeneratedRegex(@"\[\[tool:([A-Za-z0-9_\-\.]+)(?:\*(\d+))?\]\]")] private static partial Regex ToolRe();
     [GeneratedRegex(@"\[\[tools:(\d+)\]\]")] private static partial Regex ToolsRe();
+}
+
+/// <summary>Speed modes the fakes understand, and the generation time they simulate.</summary>
+public static class FakeSpeed
+{
+    public const string Standard = "standard";
+    public const string Fast = "fast";
+    public const string Flex = "flex";
+
+    /// <summary>Anthropic: <c>speed: "fast"</c>. OpenAI: <c>service_tier</c> fast/priority → fast, flex → flex.</summary>
+    public static string Mode(string? requested) => requested?.Trim().ToLowerInvariant() switch
+    {
+        "fast" or "priority" => Fast,
+        "flex" => Flex,
+        _ => Standard,
+    };
+
+    /// <summary>Simulated generation time for the turn's output; 0 when unpaced.</summary>
+    public static double GenerationMs(FakeTurn turn, FakeOptions options, string mode, int outputTokens)
+    {
+        var tps = turn.TokensPerSecond ?? options.TokensPerSecond;
+        if (tps <= 0 || outputTokens <= 0) return 0;
+        tps *= mode switch { Fast => options.FastSpeedFactor, Flex => options.FlexSpeedFactor, _ => 1 };
+        return outputTokens * 1000.0 / tps;
+    }
+}
+
+/// <summary>
+/// Spreads <c>n</c> output deltas evenly over a generation time measured from the first delta, against a clock so delays
+/// don't accumulate drift: delta k is released at k/n of the time and <see cref="FinishAsync"/> waits for the rest.
+/// </summary>
+public sealed class FakePacer(double totalMs, int deltas)
+{
+    private readonly System.Diagnostics.Stopwatch _clock = new();
+    private int _index;
+
+    public Task BeforeDeltaAsync()
+    {
+        if (totalMs <= 0 || deltas <= 0) return Task.CompletedTask;
+        if (!_clock.IsRunning) _clock.Start();
+        return WaitUntil(totalMs * _index++ / deltas);
+    }
+
+    /// <summary>Call before the final event so the stream ends at the full generation time.</summary>
+    public Task FinishAsync() => totalMs <= 0 || !_clock.IsRunning ? Task.CompletedTask : WaitUntil(totalMs);
+
+    private async Task WaitUntil(double dueMs)
+    {
+        var wait = dueMs - _clock.Elapsed.TotalMilliseconds;
+        if (wait >= 1) await Task.Delay(TimeSpan.FromMilliseconds(wait));
+    }
 }
 
 public static class Tokens

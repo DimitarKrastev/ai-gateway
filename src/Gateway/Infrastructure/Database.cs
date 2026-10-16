@@ -162,6 +162,15 @@ public sealed class Database
             CREATE INDEX ix_routing_events_time ON routing_events(at);
             CREATE INDEX ix_routing_events_session ON routing_events(session_id, at);
             """),
+        // Output throughput and speed mode (see Gateway.Usage.Throughput / SpeedModes). Older rows keep NULLs: they have no
+        // throughput and their speed mode reads as 'unknown'.
+        (5, """
+            ALTER TABLE requests ADD COLUMN first_token_at INTEGER;
+            ALTER TABLE requests ADD COLUMN generation_ms INTEGER;
+            ALTER TABLE requests ADD COLUMN requested_speed TEXT;
+            ALTER TABLE requests ADD COLUMN reported_speed TEXT;
+            ALTER TABLE requests ADD COLUMN speed_mode TEXT;
+            """),
     ];
 
     public Database(GatewayOptions options)

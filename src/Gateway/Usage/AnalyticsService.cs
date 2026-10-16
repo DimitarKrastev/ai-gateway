@@ -11,7 +11,7 @@ namespace Gateway.Usage;
 /// </summary>
 public sealed record AnalyticsFilter(
     long From, long To, string? Provider = null, long? AccountId = null, string? SessionId = null, string? Agent = null,
-    string? AgentId = null, string? Model = null, string? Client = null, bool IncludeRetried = false)
+    string? AgentId = null, string? Model = null, string? Client = null, bool IncludeRetried = false, string? SpeedMode = null)
 {
     public static AnalyticsFilter FromQuery(IQueryCollection q, DateTimeOffset now)
     {
@@ -20,7 +20,7 @@ public sealed record AnalyticsFilter(
         string? S(string k) => string.IsNullOrWhiteSpace(q[k]) ? null : q[k].ToString();
         return new AnalyticsFilter(from, Math.Max(to, from + 1), S("provider"),
             long.TryParse(q["accountId"], out var a) ? a : null, S("sessionId"), S("agent"), S("agentId"), S("model"), S("client"),
-            q["includeRetried"] == "true");
+            q["includeRetried"] == "true", S("speedMode"));
     }
 
     public static long? ParseTime(string? s)
@@ -54,6 +54,7 @@ public sealed record AnalyticsFilter(
         Add($"{p}agent_id = $f_agent_id", "$f_agent_id", AgentId);
         Add($"COALESCE({p}model, 'unknown') = $f_model", "$f_model", Model);
         Add($"{p}client = $f_client", "$f_client", Client);
+        Add($"{SpeedModes.Sql(p)} = $f_speed", "$f_speed", SpeedMode);
         return string.Join(" AND ", parts);
     }
 
@@ -61,7 +62,7 @@ public sealed record AnalyticsFilter(
         (Provider == null || r.Provider == Provider) && (AccountId == null || r.AccountId == AccountId)
         && (SessionId == null || r.SessionId == SessionId) && (AgentId == null || r.AgentId == AgentId)
         && (Agent == null || $"{r.Client}:{r.AgentRole ?? "none"}" == Agent) && (Model == null || (r.Model ?? "unknown") == Model)
-        && (Client == null || r.Client == Client);
+        && (Client == null || r.Client == Client) && (SpeedMode == null || SpeedModes.Of(r.SpeedMode, r.Endpoint) == SpeedMode);
 }
 
 public sealed record SeriesInfo(string Key, string Id, string Label, double Total);
@@ -73,12 +74,28 @@ public sealed record TimeseriesResult(
 public sealed record BreakdownRow(
     string Key, string Label, long Requests, long Errors, double CostUsd, long InputTokens, long OutputTokens,
     long CacheReadTokens, long CacheWriteTokens, long ReasoningTokens, long ToolCalls, double AvgContextTokens,
-    long MaxContextTokens, double AvgLatencyMs, long Sessions, long Agents, long? FirstSeen, long? LastSeen);
+    long MaxContextTokens, double AvgLatencyMs, long Sessions, long Agents, long? FirstSeen, long? LastSeen)
+{
+    /// <summary>Output-token-weighted mean tokens/second over <see cref="ThroughputRequests"/>; null without eligible rows.</summary>
+    public double? TokensPerSecond { get; init; }
+    public double? TokensPerSecondP50 { get; init; }
+    public double? TokensPerSecondP95 { get; init; }
+    /// <summary>Requests that have a throughput (successful, with output and a generation time).</summary>
+    public long ThroughputRequests { get; init; }
+}
+
+/// <summary>One agent instance's per-request values (see <see cref="AnalyticsService.AgentSeries"/>).</summary>
+public sealed record AgentSeriesInfo(
+    string Key, string Id, string Label, string? SessionId, string? Role, string? Client, long FirstSeen, long LastSeen,
+    long Requests, IReadOnlyList<double[]> Points);
+
+public sealed record AgentSeriesResult(
+    string Metric, bool Cumulative, long From, long To, int TotalAgents, int Hidden, IReadOnlyList<AgentSeriesInfo> Agents);
 
 /// <summary>Read side of usage analytics. Response shapes are documented in .claude/ledger/analytics.md.</summary>
 public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvider time)
 {
-    private enum Agg { Sum, Avg, Max, Distinct, Concurrency }
+    private enum Agg { Sum, Avg, Max, Distinct, Concurrency, Percentile }
 
     private static readonly Dictionary<string, (string Sql, Agg Kind)> MetricSql = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -96,6 +113,10 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         ["contextMax"] = ("MAX(context_tokens)", Agg.Max),
         ["latencyAvg"] = ("AVG(completed_at - started_at)", Agg.Avg),
         ["ttfbAvg"] = ("AVG(first_byte_at - started_at)", Agg.Avg),
+        ["tokensPerSecond"] = (Throughput.WeightedAvgSql(), Agg.Avg),
+        // Percentile metrics: the SQL is the per-request value; percentiles are computed in memory.
+        ["tokensPerSecondP50"] = (Throughput.PerRequestSql(), Agg.Percentile),
+        ["tokensPerSecondP95"] = (Throughput.PerRequestSql(), Agg.Percentile),
         ["activeAgents"] = ("COUNT(DISTINCT agent_id)", Agg.Distinct),
         ["activeSessions"] = ("COUNT(DISTINCT session_id)", Agg.Distinct),
         ["concurrentRequests"] = ("", Agg.Concurrency),
@@ -103,7 +124,31 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
     };
 
     public static IReadOnlyCollection<string> MetricNames => MetricSql.Keys;
-    public static readonly string[] GroupNames = ["none", "provider", "account", "session", "agent", "agentId", "model", "client", "endpoint"];
+    public static readonly string[] GroupNames =
+        ["none", "provider", "account", "session", "agent", "agentId", "model", "speedMode", "modelMode", "client", "endpoint"];
+
+    /// <summary>Per-request value of each metric for <see cref="AgentSeries"/>; null = metric has no per-request meaning.</summary>
+    private static string? PerRequestSql(string metric) => metric switch
+    {
+        "requests" => "1",
+        "errors" => "CASE WHEN status >= 400 OR error_type IS NOT NULL THEN 1 ELSE 0 END",
+        "cost" => "cost_usd",
+        "inputTokens" => "input_tokens",
+        "outputTokens" => "output_tokens",
+        "cacheReadTokens" => "cache_read_tokens",
+        "cacheWriteTokens" => "cache_write_tokens",
+        "reasoningTokens" => "reasoning_tokens",
+        "totalTokens" => "input_tokens + output_tokens + cache_read_tokens + cache_write_tokens",
+        "toolCalls" => "tool_calls",
+        "contextAvg" or "contextMax" => "CASE WHEN context_tokens > 0 THEN context_tokens END",
+        "latencyAvg" => "completed_at - started_at",
+        "ttfbAvg" => "first_byte_at - started_at",
+        "tokensPerSecond" or "tokensPerSecondP50" or "tokensPerSecondP95" => Throughput.PerRequestSql(),
+        _ => null,
+    };
+
+    /// <summary>Metrics whose per-agent view is a running total (a per-request value of 1 says nothing).</summary>
+    private static bool AlwaysCumulative(string metric) => metric is "requests" or "errors";
 
     private static readonly (string Name, long Ms)[] Buckets =
     [
@@ -121,6 +166,8 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         "agent" => AgentKindSql(p),
         "agentId" => $"COALESCE({p}agent_id, 'none')",
         "model" => $"COALESCE({p}model, 'unknown')",
+        "speedMode" => SpeedModes.Sql(p),
+        "modelMode" => $"(COALESCE({p}model, 'unknown') || '|' || {SpeedModes.Sql(p)})",
         "client" => $"{p}client",
         "endpoint" => $"{p}endpoint",
         _ => null,
@@ -149,25 +196,30 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
 
         var start = f.From / bucket.Ms * bucket.Ms;
         var count = (int)Math.Max(1, (f.To - start + bucket.Ms - 1) / bucket.Ms);
-        var labels = Labels(groupBy);
+        var labels = Labels(groupBy, f);
 
         // values[seriesId][bucketIndex]
         var columns = new List<(string Id, string Label, double?[] Values, double Total)>();
         foreach (var metric in metrics)
         {
             var (sql, kind) = MetricSql[metric];
-            var perGroup = kind == Agg.Concurrency
-                ? Concurrency(f, groupBy, metric == "concurrentAgents", start, bucket.Ms, count)
-                : Aggregate(f, groupBy, sql, start, bucket.Ms, count);
+            Dictionary<string, double>? percentileTotals = null;
+            var perGroup = kind switch
+            {
+                Agg.Concurrency => Concurrency(f, groupBy, metric == "concurrentAgents", start, bucket.Ms, count),
+                Agg.Percentile => Percentiles(f, groupBy, sql, Quantile(metric), start, bucket.Ms, count, out percentileTotals),
+                _ => Aggregate(f, groupBy, sql, start, bucket.Ms, count),
+            };
 
             if (groupBy == "none")
             {
                 var values = perGroup.GetValueOrDefault("") ?? new double?[count];
-                columns.Add((metric, metric, values, Total(values, kind, f, sql, groupBy, "")));
+                columns.Add((metric, metric, values, percentileTotals?.GetValueOrDefault("") ?? Total(values, kind, f, sql, groupBy, "")));
                 continue;
             }
 
-            var totals = perGroup.ToDictionary(g => g.Key, g => Total(g.Value, kind, f, sql, groupBy, g.Key));
+            var totals = perGroup.ToDictionary(g => g.Key,
+                g => percentileTotals != null ? percentileTotals.GetValueOrDefault(g.Key) : Total(g.Value, kind, f, sql, groupBy, g.Key));
             var ranked = totals.OrderByDescending(t => t.Value).ThenBy(t => t.Key, StringComparer.Ordinal).ToList();
             foreach (var (id, total) in ranked.Take(limit))
                 columns.Add((id, labels(id), perGroup[id], total));
@@ -191,7 +243,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
             {
                 var kind = MetricSql[metrics[groupBy == "none" ? i : 0]].Kind;
                 // Sums and peaks are 0 in an empty bucket; averages are absent there so lines skip the gap.
-                var v = columns[i].Values[b] ?? (kind == Agg.Avg ? null : 0d);
+                var v = columns[i].Values[b] ?? (kind is Agg.Avg or Agg.Percentile ? null : 0d);
                 if (v is { } value) point[$"s{i}"] = Math.Round(value, 6);
             }
             points.Add(point);
@@ -219,6 +271,45 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
             var g = r.IsDBNull(1) ? "none" : r.GetString(1);
             if (!result.TryGetValue(g, out var arr)) result[g] = arr = new double?[count];
             arr[b] = r.GetDouble(2);
+        }
+        return result;
+    }
+
+    private static double Quantile(string metric) => metric.EndsWith("P95", StringComparison.OrdinalIgnoreCase) ? 0.95 : 0.5;
+
+    /// <summary>Per-bucket percentile of a per-request value (NULLs skipped), plus each group's percentile over the range.</summary>
+    private Dictionary<string, double?[]> Percentiles(AnalyticsFilter f, string groupBy, string valueSql, double q, long start, long bucketMs,
+        int count, out Dictionary<string, double> totals)
+    {
+        var values = new Dictionary<string, Dictionary<long, List<double>>>();
+        using (var conn = db.Open())
+        using (var cmd = conn.CreateCommand())
+        {
+            var where = f.Where(cmd);
+            cmd.CommandText = $"""
+                SELECT (started_at - $start) / $bucket AS b, {GroupSql(groupBy)} AS g, {valueSql} AS v
+                FROM requests WHERE {where} AND {valueSql} IS NOT NULL;
+                """;
+            cmd.Parameters.AddWithValue("$start", start);
+            cmd.Parameters.AddWithValue("$bucket", bucketMs);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var b = r.GetInt64(0);
+                if (b < 0 || b >= count) continue;
+                var g = r.IsDBNull(1) ? "none" : r.GetString(1);
+                if (!values.TryGetValue(g, out var byBucket)) values[g] = byBucket = new();
+                if (!byBucket.TryGetValue(b, out var list)) byBucket[b] = list = new();
+                list.Add(r.GetDouble(2));
+            }
+        }
+        var result = new Dictionary<string, double?[]>();
+        totals = new Dictionary<string, double>();
+        foreach (var (g, byBucket) in values)
+        {
+            var arr = result[g] = new double?[count];
+            foreach (var (b, list) in byBucket) arr[b] = Throughput.Percentile([.. list], q);
+            totals[g] = Throughput.Percentile(byBucket.Values.SelectMany(l => l).ToList(), q) ?? 0;
         }
         return result;
     }
@@ -285,6 +376,8 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         "agent" => $"{l.Client}:{l.AgentRole ?? "none"}",
         "agentId" => l.AgentId ?? "none",
         "model" => l.Model ?? "unknown",
+        "speedMode" => SpeedModes.Of(l.SpeedMode, l.Endpoint),
+        "modelMode" => $"{l.Model ?? "unknown"}|{SpeedModes.Of(l.SpeedMode, l.Endpoint)}",
         "client" => l.Client,
         "endpoint" => l.Endpoint,
         _ => "",
@@ -376,6 +469,8 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
             toolCalls = row?.ToolCalls ?? 0,
             avgContextTokens = row?.AvgContextTokens ?? 0, maxContextTokens = row?.MaxContextTokens ?? 0,
             avgLatencyMs = row?.AvgLatencyMs ?? 0,
+            tokensPerSecond = row?.TokensPerSecond, tokensPerSecondP50 = row?.TokensPerSecondP50,
+            tokensPerSecondP95 = row?.TokensPerSecondP95, throughputRequests = row?.ThroughputRequests ?? 0,
             sessions = row?.Sessions ?? 0, agents = row?.Agents ?? 0, models,
             peakConcurrentRequests = peakRequests, peakConcurrentAgents = peakAgents,
             firstSeen = row?.FirstSeen, lastSeen = row?.LastSeen,
@@ -396,24 +491,55 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
                    COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0), COALESCE(SUM(reasoning_tokens), 0),
                    COALESCE(SUM(tool_calls), 0), COALESCE(AVG(CASE WHEN context_tokens > 0 THEN context_tokens END), 0),
                    COALESCE(MAX(context_tokens), 0), COALESCE(AVG(completed_at - started_at), 0),
-                   COUNT(DISTINCT session_id), COUNT(DISTINCT agent_id), MIN(started_at), MAX(completed_at)
+                   COUNT(DISTINCT session_id), COUNT(DISTINCT agent_id), MIN(started_at), MAX(completed_at),
+                   {Throughput.WeightedAvgSql()}, SUM(CASE WHEN {Throughput.EligibleSql()} THEN 1 ELSE 0 END)
             FROM requests WHERE {where}
             GROUP BY g HAVING COUNT(*) > 0
             ORDER BY 4 DESC, 2 DESC LIMIT $limit;
             """;
         cmd.Parameters.AddWithValue("$limit", limit);
-        var labels = Labels(by);
+        var labels = Labels(by, f);
         var rows = new List<BreakdownRow>();
-        using var r = cmd.ExecuteReader();
-        while (r.Read())
-        {
-            var key = r.IsDBNull(0) ? "none" : r.GetString(0);
-            rows.Add(new BreakdownRow(key, by == "none" ? "Total" : labels(key), r.GetInt64(1), r.GetInt64(2),
-                Math.Round(r.GetDouble(3), 6), r.GetInt64(4), r.GetInt64(5), r.GetInt64(6), r.GetInt64(7), r.GetInt64(8), r.GetInt64(9),
-                Math.Round(r.GetDouble(10), 1), r.GetInt64(11), Math.Round(r.GetDouble(12), 1), r.GetInt64(13), r.GetInt64(14),
-                r.IsDBNull(15) ? null : r.GetInt64(15), r.IsDBNull(16) ? null : r.GetInt64(16)));
-        }
+        using (var r = cmd.ExecuteReader())
+            while (r.Read())
+            {
+                var key = r.IsDBNull(0) ? "none" : r.GetString(0);
+                rows.Add(new BreakdownRow(key, by == "none" ? "Total" : labels(key), r.GetInt64(1), r.GetInt64(2),
+                    Math.Round(r.GetDouble(3), 6), r.GetInt64(4), r.GetInt64(5), r.GetInt64(6), r.GetInt64(7), r.GetInt64(8), r.GetInt64(9),
+                    Math.Round(r.GetDouble(10), 1), r.GetInt64(11), Math.Round(r.GetDouble(12), 1), r.GetInt64(13), r.GetInt64(14),
+                    r.IsDBNull(15) ? null : r.GetInt64(15), r.IsDBNull(16) ? null : r.GetInt64(16))
+                {
+                    TokensPerSecond = r.IsDBNull(17) ? null : Math.Round(r.GetDouble(17), 1),
+                    ThroughputRequests = r.IsDBNull(18) ? 0 : r.GetInt64(18),
+                });
+            }
+        if (rows.Any(row => row.ThroughputRequests > 0)) rows = WithThroughputPercentiles(f, groupSql, rows);
         return rows;
+    }
+
+    private List<BreakdownRow> WithThroughputPercentiles(AnalyticsFilter f, string groupSql, List<BreakdownRow> rows)
+    {
+        var values = new Dictionary<string, List<double>>();
+        using (var conn = db.Open())
+        using (var cmd = conn.CreateCommand())
+        {
+            var where = f.Where(cmd);
+            cmd.CommandText = $"SELECT {groupSql}, {Throughput.PerRequestSql()} AS v FROM requests WHERE {where} AND {Throughput.EligibleSql()};";
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var key = r.IsDBNull(0) ? "none" : r.GetString(0);
+                if (!values.TryGetValue(key, out var list)) values[key] = list = new();
+                list.Add(r.GetDouble(1));
+            }
+        }
+        return rows.Select(row => values.TryGetValue(row.Key, out var list)
+            ? row with
+            {
+                TokensPerSecondP50 = Math.Round(Throughput.Percentile(list, 0.5)!.Value, 1),
+                TokensPerSecondP95 = Math.Round(Throughput.Percentile(list, 0.95)!.Value, 1),
+            }
+            : row).ToList();
     }
 
     private List<BreakdownRow> ToolBreakdown(AnalyticsFilter f, int limit)
@@ -492,7 +618,8 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
                    r.agent_id, r.agent_role, r.method, r.path, r.endpoint, r.model, r.stream, r.status, r.error_type, r.stop_reason,
                    r.cancelled, r.input_tokens, r.output_tokens, r.cache_read_tokens, r.cache_write_tokens, r.reasoning_tokens,
                    r.context_tokens, r.tool_calls, r.cost_usd, r.started_at, r.completed_at, r.first_byte_at,
-                   (SELECT GROUP_CONCAT(t.tool || ':' || t.count, ',') FROM request_tools t WHERE t.request_row_id = r.id)
+                   (SELECT GROUP_CONCAT(t.tool || ':' || t.count, ',') FROM request_tools t WHERE t.request_row_id = r.id),
+                   r.first_token_at, r.generation_ms, r.requested_speed, r.reported_speed, r.speed_mode, {Throughput.PerRequestSql("r.")}
             FROM requests r WHERE {where} ORDER BY r.id DESC LIMIT $limit;
             """;
         cmd.Parameters.AddWithValue("$limit", limit);
@@ -520,6 +647,10 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
                 startedAt = r.GetInt64(28), completedAt = r.GetInt64(29),
                 latencyMs = r.GetInt64(29) - r.GetInt64(28),
                 ttfbMs = r.IsDBNull(30) ? (long?)null : r.GetInt64(30) - r.GetInt64(28),
+                firstTokenMs = r.IsDBNull(32) ? (long?)null : r.GetInt64(32) - r.GetInt64(28),
+                generationMs = r.IsDBNull(33) ? (long?)null : r.GetInt64(33),
+                requestedSpeed = S(34), reportedSpeed = S(35), speedMode = S(36),
+                tokensPerSecond = r.IsDBNull(37) ? (double?)null : Math.Round(r.GetDouble(37), 1),
             });
         }
         var nextBefore = items.Count == limit ? lastId : (long?)null;
@@ -554,8 +685,94 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         };
     }
 
+    // ---------------------------------------------------------------- per-agent series
+
+    /// <summary>
+    /// One series per agent instance with the per-request value of <paramref name="metric"/> at each request start, so an agent's
+    /// line begins at its first request and shows e.g. how its context grew. Sum metrics can be plotted as running totals.
+    /// The <paramref name="limit"/> agents with the most requests are returned (ordered by first appearance); the rest are
+    /// counted in <see cref="AgentSeriesResult.Hidden"/>. Each series is thinned to at most <paramref name="maxPoints"/>
+    /// points, keeping each slice's peak (or last value when cumulative). Returns null for metrics without a per-request value.
+    /// </summary>
+    public AgentSeriesResult? AgentSeries(AnalyticsFilter f, string metric, bool cumulative, int limit = 12, int maxPoints = 600)
+    {
+        var name = MetricSql.Keys.FirstOrDefault(k => k.Equals(metric, StringComparison.OrdinalIgnoreCase));
+        if (name == null || PerRequestSql(name) is not { } valueSql) return null;
+        cumulative = cumulative && MetricSql[name].Kind == Agg.Sum || AlwaysCumulative(name);
+
+        var rows = new Dictionary<string, (string? Session, string? Role, string? Client, List<(long T, double V)> Points, long Requests)>();
+        using (var conn = db.Open())
+        using (var cmd = conn.CreateCommand())
+        {
+            var where = f.Where(cmd);
+            cmd.CommandText = $"""
+                SELECT agent_id, session_id, agent_role, client, started_at, {valueSql} AS v
+                FROM requests WHERE {where} AND agent_id IS NOT NULL ORDER BY started_at, id;
+                """;
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var id = r.GetString(0);
+                if (!rows.TryGetValue(id, out var a))
+                    rows[id] = a = (r.IsDBNull(1) ? null : r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.GetString(3), new(), 0);
+                a.Requests++;
+                if (!r.IsDBNull(5)) a.Points.Add((r.GetInt64(4), r.GetDouble(5)));
+                rows[id] = a;
+            }
+        }
+
+        var chosen = rows.OrderByDescending(a => a.Value.Requests).ThenBy(a => a.Key, StringComparer.Ordinal).Take(limit)
+            .Where(a => a.Value.Points.Count > 0)
+            .OrderBy(a => a.Value.Points[0].T).ThenBy(a => a.Key, StringComparer.Ordinal).ToList();
+        var agents = chosen.Select((a, i) =>
+        {
+            var points = a.Value.Points;
+            if (cumulative)
+            {
+                double run = 0;
+                points = points.Select(p => (p.T, run += p.V)).ToList();
+            }
+            var thinned = Thin(points, maxPoints, cumulative).Select(p => new[] { p.T, Math.Round(p.V, 6) }).ToList();
+            return new AgentSeriesInfo($"a{i}", a.Key, AgentLabel(a.Key, a.Value.Role), a.Value.Session, a.Value.Role, a.Value.Client,
+                a.Value.Points[0].T, a.Value.Points[^1].T, a.Value.Requests, thinned);
+        }).ToList();
+        return new AgentSeriesResult(name, cumulative, f.From, f.To, rows.Count, rows.Count - agents.Count, agents);
+    }
+
+    private static List<(long T, double V)> Thin(List<(long T, double V)> points, int max, bool keepLast)
+    {
+        if (points.Count <= max || max < 2) return points;
+        var result = new List<(long, double)>(max);
+        var size = (double)points.Count / max;
+        for (var i = 0; i < max; i++)
+        {
+            var slice = points.Skip((int)(i * size)).Take(Math.Max(1, (int)((i + 1) * size) - (int)(i * size))).ToList();
+            if (slice.Count == 0) continue;
+            result.Add(keepLast ? slice[^1] : slice.MaxBy(p => p.V));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// "session8 · role · instance" for an agent id <c>provider:session:key</c>, e.g. <c>1a2b3c4d · subagent · 9f3e2a</c> or
+    /// <c>5e6f7a8b · main</c> (Codex, whose key is the role).
+    /// </summary>
+    public static string AgentLabel(string agentId, string? role)
+    {
+        var parts = agentId.Split(':', 3);
+        if (parts.Length < 3) return agentId;
+        var session = parts[1].Length > 8 ? parts[1][..8] : parts[1];
+        var key = parts[2];
+        role ??= "agent";
+        string? instance = key == role || key == "utility" ? null
+            : key.StartsWith(role + "@", StringComparison.Ordinal) ? key[(role.Length + 1)..]
+            : key.StartsWith("a-", StringComparison.Ordinal) ? key[2..8]
+            : key[..Math.Min(6, key.Length)];
+        return instance != null ? $"{session} · {role} · {instance}" : $"{session} · {role}";
+    }
+
     /// <summary>Human-readable labels for group keys (account names; short agent ids).</summary>
-    private Func<string, string> Labels(string groupBy)
+    private Func<string, string> Labels(string groupBy, AnalyticsFilter? f = null)
     {
         switch (groupBy)
         {
@@ -572,14 +789,18 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
             case "agent":
                 return k => k.Replace(':', ' ');
             case "agentId":
-                return k =>
-                {
-                    // provider:session:key → "key @ session…"
-                    var parts = k.Split(':');
-                    if (parts.Length < 3) return k;
-                    var session = parts[1].Length > 8 ? parts[1][..8] : parts[1];
-                    return $"{string.Join(':', parts.Skip(2))} @ {session}";
-                };
+            {
+                var roles = new Dictionary<string, string?>();
+                using var conn = db.Open();
+                using var cmd = conn.CreateCommand();
+                var where = f != null ? f.Where(cmd) : "1 = 1";
+                cmd.CommandText = $"SELECT agent_id, MAX(agent_role) FROM requests WHERE {where} AND agent_id IS NOT NULL GROUP BY agent_id;";
+                using var r = cmd.ExecuteReader();
+                while (r.Read()) roles[r.GetString(0)] = r.IsDBNull(1) ? null : r.GetString(1);
+                return k => AgentLabel(k, roles.GetValueOrDefault(k));
+            }
+            case "modelMode":
+                return k => k.Replace("|", " · ");
             default:
                 return k => k;
         }

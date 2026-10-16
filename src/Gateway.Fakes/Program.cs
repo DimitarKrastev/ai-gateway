@@ -31,6 +31,8 @@ internal static class FakesProgram
         {
             o.AutoRegister = builder.Configuration.GetValue("Fakes:AutoRegister", true);
             o.StreamChunkDelayMs = builder.Configuration.GetValue("Fakes:StreamChunkDelayMs", 0);
+            o.TokensPerSecond = builder.Configuration.GetValue("Fakes:TokensPerSecond", 0.0);
+            o.FastSpeedFactor = builder.Configuration.GetValue("Fakes:FastSpeedFactor", 2.5);
         });
         builder.WebHost.UseKestrel(k => k.Listen(IPAddress.Loopback, port));
 

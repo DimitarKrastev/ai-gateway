@@ -178,6 +178,10 @@ public static class AnthropicFake
         var truncated = turn.OutputTokens > maxTok.GetInt32();
         var stopReason = truncated ? "max_tokens" : turn.ToolCalls.Count > 0 ? "tool_use" : "end_turn";
         var toolCalls = truncated ? [] : turn.ToolCalls;
+        // Fast mode: `speed: "fast"` generates faster and is echoed as usage.speed (absent when the request didn't ask).
+        var requestedSpeed = body.Str("speed");
+        var speed = new Speed(requestedSpeed != null ? FakeSpeed.Mode(requestedSpeed) : null,
+            FakeSpeed.GenerationMs(turn, state.Options, FakeSpeed.Mode(requestedSpeed), usage.Output), turn.FirstTokenDelayMs ?? 0);
 
         lock (state.Gate)
         {
@@ -202,32 +206,42 @@ public static class AnthropicFake
         ctx.Response.Headers["request-id"] = requestId;
 
         if (body.Bool("stream"))
-            await StreamAsync(ctx, state, model, msgId, turn, toolCalls, stopReason, usage);
+            await StreamAsync(ctx, state, model, msgId, turn, toolCalls, stopReason, usage, speed);
         else
         {
+            var wait = speed.FirstTokenDelayMs + speed.GenerationMs;
+            if (wait >= 1) await Task.Delay(TimeSpan.FromMilliseconds(wait));
             var content = new List<object> { new { type = "text", text = turn.Text } };
             content.AddRange(toolCalls.Select(c => (object)new { type = "tool_use", id = c.Id, name = c.Name, input = JsonDocument.Parse(c.InputJson).RootElement }));
             await ctx.Response.WriteAsJsonAsync(new
             {
                 id = msgId, type = "message", role = "assistant", model, content,
                 stop_reason = stopReason, stop_sequence = (string?)null,
-                usage = UsageJson(usage),
+                usage = UsageJson(usage, speed.Reported),
             });
         }
     }
 
-    private static object UsageJson(TokenUsage u) => new
+    /// <summary>Speed of one fake response: the reported <c>usage.speed</c> (null = omitted) and the simulated timing.</summary>
+    private sealed record Speed(string? Reported, double GenerationMs, int FirstTokenDelayMs);
+
+    private static Dictionary<string, object?> UsageJson(TokenUsage u, string? speed, int? outputTokens = null)
     {
-        input_tokens = u.Input,
-        cache_creation_input_tokens = u.CacheWrite,
-        cache_read_input_tokens = u.CacheRead,
-        cache_creation = new { ephemeral_5m_input_tokens = u.CacheWrite, ephemeral_1h_input_tokens = 0 },
-        output_tokens = u.Output,
-        service_tier = "standard",
-    };
+        var json = new Dictionary<string, object?>
+        {
+            ["input_tokens"] = u.Input,
+            ["cache_creation_input_tokens"] = u.CacheWrite,
+            ["cache_read_input_tokens"] = u.CacheRead,
+            ["cache_creation"] = new { ephemeral_5m_input_tokens = u.CacheWrite, ephemeral_1h_input_tokens = 0 },
+            ["output_tokens"] = outputTokens ?? u.Output,
+            ["service_tier"] = "standard",
+        };
+        if (speed != null) json["speed"] = speed;
+        return json;
+    }
 
     private static async Task StreamAsync(HttpContext ctx, FakeProviderState state, string model, string msgId, FakeTurn turn,
-        List<FakeToolCall> toolCalls, string stopReason, TokenUsage usage)
+        List<FakeToolCall> toolCalls, string stopReason, TokenUsage usage, Speed speed)
     {
         SseWriter.Start(ctx.Response);
         var sse = new SseWriter(ctx.Response, turn.DelayMs ?? state.Options.StreamChunkDelayMs);
@@ -238,18 +252,19 @@ public static class AnthropicFake
             {
                 id = msgId, type = "message", role = "assistant", model, content = Array.Empty<object>(),
                 stop_reason = (string?)null, stop_sequence = (string?)null,
-                usage = new
-                {
-                    input_tokens = usage.Input, cache_creation_input_tokens = usage.CacheWrite, cache_read_input_tokens = usage.CacheRead,
-                    cache_creation = new { ephemeral_5m_input_tokens = usage.CacheWrite, ephemeral_1h_input_tokens = 0 },
-                    output_tokens = 1, service_tier = "standard",
-                },
+                usage = UsageJson(usage, speed.Reported, outputTokens: 1),
             },
         });
         await sse.EventAsync("content_block_start", new { type = "content_block_start", index = 0, content_block = new { type = "text", text = "" } });
         await sse.EventAsync("ping", new { type = "ping" });
-        foreach (var chunk in Chunks(turn.Text, 24))
+        if (speed.FirstTokenDelayMs > 0) await Task.Delay(speed.FirstTokenDelayMs);
+        var textChunks = Chunks(turn.Text, 24).ToList();
+        var pacer = new FakePacer(speed.GenerationMs, textChunks.Count + toolCalls.Sum(c => Chunks(c.InputJson, 12).Count()));
+        foreach (var chunk in textChunks)
+        {
+            await pacer.BeforeDeltaAsync();
             await sse.EventAsync("content_block_delta", new { type = "content_block_delta", index = 0, delta = new { type = "text_delta", text = chunk } });
+        }
         await sse.EventAsync("content_block_stop", new { type = "content_block_stop", index = 0 });
 
         var index = 1;
@@ -257,18 +272,33 @@ public static class AnthropicFake
         {
             await sse.EventAsync("content_block_start", new { type = "content_block_start", index, content_block = new { type = "tool_use", id = call.Id, name = call.Name, input = new { } } });
             foreach (var part in Chunks(call.InputJson, 12))
+            {
+                await pacer.BeforeDeltaAsync();
                 await sse.EventAsync("content_block_delta", new { type = "content_block_delta", index, delta = new { type = "input_json_delta", partial_json = part } });
+            }
             await sse.EventAsync("content_block_stop", new { type = "content_block_stop", index });
             index++;
         }
+        await pacer.FinishAsync();
         // message_delta usage is cumulative (current API includes the input counts too) — consumers must not sum it with message_start.
         await sse.EventAsync("message_delta", new
         {
             type = "message_delta",
             delta = new { stop_reason = stopReason, stop_sequence = (string?)null },
-            usage = new { input_tokens = usage.Input, cache_creation_input_tokens = usage.CacheWrite, cache_read_input_tokens = usage.CacheRead, output_tokens = usage.Output },
+            usage = MessageDeltaUsage(usage, speed.Reported),
         });
         await sse.EventAsync("message_stop", new { type = "message_stop" });
+    }
+
+    private static Dictionary<string, object?> MessageDeltaUsage(TokenUsage u, string? speed)
+    {
+        var json = new Dictionary<string, object?>
+        {
+            ["input_tokens"] = u.Input, ["cache_creation_input_tokens"] = u.CacheWrite, ["cache_read_input_tokens"] = u.CacheRead,
+            ["output_tokens"] = u.Output,
+        };
+        if (speed != null) json["speed"] = speed;
+        return json;
     }
 
     internal static IEnumerable<string> Chunks(string s, int size)

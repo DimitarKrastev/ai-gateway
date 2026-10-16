@@ -12,6 +12,15 @@ public sealed class FakeOptions
     public TimeSpan AccessTokenLifetime { get; set; } = TimeSpan.FromHours(8);
     /// <summary>Delay between streamed SSE events (ms). <c>[[slow:N]]</c> in a prompt overrides it per request.</summary>
     public int StreamChunkDelayMs { get; set; }
+    /// <summary>
+    /// Generation speed in output tokens/second for standard mode; 0 = unpaced (as fast as possible). <c>[[tps:N]]</c> in a
+    /// prompt overrides it per request. Streams spread the output deltas over the generation time; JSON responses wait for it.
+    /// </summary>
+    public double TokensPerSecond { get; set; }
+    /// <summary>Speed multiplier for fast mode (Anthropic <c>speed: "fast"</c>, OpenAI <c>service_tier</c> fast/priority).</summary>
+    public double FastSpeedFactor { get; set; } = 2.5;
+    /// <summary>Speed multiplier for OpenAI <c>service_tier: "flex"</c>.</summary>
+    public double FlexSpeedFactor { get; set; } = 0.5;
 }
 
 public enum FakeAuthKind { ApiKey, OAuth }

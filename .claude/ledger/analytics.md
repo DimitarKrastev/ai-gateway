@@ -29,6 +29,7 @@
   - The agent "kind" key is `client:role`, e.g. `claude-code:subagent`.
 - Retried attempts (429 failover) are stored with `retried=1`. They are excluded from stats unless `includeRetried=true`. The request log always shows them.
 - `LiveRequests` tracks attempts in flight.
+- Throughput (migration v5): `first_token_at` (first output delta of a stream), `generation_ms` (stream: completed − first token, else first byte; JSON: whole latency), `requested_speed`/`reported_speed` (raw), `speed_mode` (normalized by `SpeedModes`; NULL for non-generation rows, read as `n/a`; pre-v5 generation rows read as `unknown`).
 
 ## API (cookie auth; all GET)
 **Common filters**
@@ -42,10 +43,12 @@
 **`/api/analytics/timeseries`**
 - Parameters:
   - `metric`: a comma list. Several metrics are allowed only with `groupBy=none`.
-  - `groupBy`: `none | provider | account | session | agent | agentId | model | client | endpoint`.
+  - `groupBy`: `none | provider | account | session | agent | agentId | model | speedMode | modelMode | client | endpoint`.
+    `modelMode` keys are `model|mode`. `speedMode` is also a filter.
   - `bucket`: `auto | minute | 5min | 15min | hour | 6hour | day`. `auto` keeps it to 240 points or fewer.
   - `limit`: top N series, default 8. With grouping, an "Other (n)" series is added for sum metrics.
-- Metrics: `requests, errors, cost, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, totalTokens, toolCalls, contextAvg, contextMax, latencyAvg, ttfbAvg, activeAgents, activeSessions, concurrentRequests, concurrentAgents`.
+- Metrics: `requests, errors, cost, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens, totalTokens, toolCalls, contextAvg, contextMax, latencyAvg, ttfbAvg, tokensPerSecond, tokensPerSecondP50, tokensPerSecondP95, activeAgents, activeSessions, concurrentRequests, concurrentAgents`.
+  - `tokensPerSecond`: output-token-weighted mean of per-request tokens/s; `…P50/P95`: percentiles computed in memory. Only rows matching `Throughput.EligibleSql` (status < 400, not cancelled, output > 0, generation_ms > 0) count.
   - `concurrent*`: peak overlap within the bucket, including requests still in flight.
   - `active*`: distinct agents or sessions with requests in the bucket.
 - Returns `{metrics, groupBy, bucket, bucketMs, from, to, series:[{key:"s0", id, label, total}], points:[{t, s0, s1…}]}`.
@@ -57,11 +60,19 @@
 - Labels: account → account name; agentId → `key @ session8`.
 - With `by=tool`, only `requests`, `toolCalls`, `sessions`, `agents`, `firstSeen` and `lastSeen` are filled.
 
+- Breakdown rows (and the summary) also carry `tokensPerSecond, tokensPerSecondP50, tokensPerSecondP95` (null without measured requests) and `throughputRequests`.
+
+**`/api/analytics/agent-series?metric=contextMax&cumulative=false&limit=12`**
+- One series per agent instance with the per-request value at each request start: `{metric, cumulative, from, to, totalAgents, hidden, agents:[{key:"a0", id, label, sessionId, role, client, firstSeen, lastSeen, requests, points:[[t, v]…]}]}`.
+- Top `limit` agents by request count, ordered by first appearance; `hidden` = agents left out. Points thinned to ≤ 600 per agent.
+- `cumulative=true` gives running totals for sum metrics; `requests`/`errors` are always cumulative. Metrics without a per-request value (`active*`, `concurrent*`) → 400.
+- Agent labels (also for `groupBy=agentId`): `session8 · role · instance`, e.g. `1a2b3c4d · subagent · 9f3e2a`.
+
 **`/api/analytics/sessions?limit=50&offset=0`**
 - Returns `{total, limit, offset, items:[{provider, sessionId, firstSeen, lastSeen, requests, costUsd, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, toolCalls, maxContextTokens, agents, accountsUsed, errors, accountId, accountName, client, model, live}]}`, newest first.
 
 **`/api/analytics/requests?limit=50&before=<id>`**
-- Returns `{items:[{id, requestId, attempt, retried, provider, accountId, accountName, sessionId, client, clientVersion, agentId, agentRole, method, path, endpoint, model, stream, status, errorType, stopReason, cancelled, inputTokens…contextTokens, toolCalls, tools:{name:count}, costUsd, startedAt, completedAt, latencyMs, ttfbMs}], nextBefore}`.
+- Returns `{items:[{id, requestId, attempt, retried, provider, accountId, accountName, sessionId, client, clientVersion, agentId, agentRole, method, path, endpoint, model, stream, status, errorType, stopReason, cancelled, inputTokens…contextTokens, toolCalls, tools:{name:count}, costUsd, startedAt, completedAt, latencyMs, ttfbMs, firstTokenMs, generationMs, requestedSpeed, reportedSpeed, speedMode, tokensPerSecond}], nextBefore}`.
 
 **`/api/analytics/live`**
 - Returns `{now, inFlightRequests, activeAgents, activeSessions, agentsLast5Min, sessionsLast5Min, requests:[{requestId, provider, accountId, accountName, sessionId, agentId, agentRole, client, model, stream, endpoint, startedAt, elapsedMs}]}`.

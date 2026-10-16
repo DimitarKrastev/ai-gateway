@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import type { RequestRow } from '../types'
-import { fmtCompact, fmtDateTime, fmtMs, fmtUsd, shortId } from '../format'
+import { fmtCompact, fmtDateTime, fmtMs, fmtTps, fmtUsd, shortId } from '../format'
 import { Badge } from './ui'
 
 function StatusCell({ r }: { r: RequestRow }) {
@@ -37,6 +37,7 @@ export default function RequestsTable({ rows, showSession = true }: { rows: Requ
             <th className="num">Tools</th>
             <th className="num">Cost</th>
             <th className="num">Latency</th>
+            <th className="num">Tok/s</th>
           </tr>
         </thead>
         <tbody>
@@ -63,7 +64,15 @@ export default function RequestsTable({ rows, showSession = true }: { rows: Requ
                 {r.agentRole ?? '—'}
                 {r.client && <span className="muted small"> · {r.client}</span>}
               </td>
-              <td>{r.model ?? '—'}</td>
+              <td title={r.requestedSpeed || r.reportedSpeed ? `requested ${r.requestedSpeed ?? '—'} · reported ${r.reportedSpeed ?? '—'}` : ''}>
+                {r.model ?? '—'}
+                {r.speedMode && r.speedMode !== 'standard' && (
+                  <>
+                    {' '}
+                    <Badge tone={r.speedMode === 'fast' ? 'accent' : 'neutral'}>{r.speedMode}</Badge>
+                  </>
+                )}
+              </td>
               <td>
                 {r.endpoint}
                 {r.stream && <span className="muted small"> · stream</span>}
@@ -82,6 +91,16 @@ export default function RequestsTable({ rows, showSession = true }: { rows: Requ
               <td className="num">{fmtUsd(r.costUsd)}</td>
               <td className="num" title={r.ttfbMs !== null ? `first byte ${fmtMs(r.ttfbMs)}` : ''}>
                 {fmtMs(r.latencyMs)}
+              </td>
+              <td
+                className="num"
+                title={
+                  r.generationMs !== null
+                    ? `${fmtCompact(r.outputTokens)} tokens in ${fmtMs(r.generationMs)}${r.stream ? ' from first token' : ' (whole latency, not streamed)'}`
+                    : ''
+                }
+              >
+                {r.tokensPerSecond === null || r.tokensPerSecond === undefined ? '' : fmtTps(r.tokensPerSecond).replace(' tok/s', '')}
               </td>
             </tr>
           ))}

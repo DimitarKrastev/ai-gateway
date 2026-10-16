@@ -115,8 +115,9 @@ class ClaudeSession {
   }
 
   /** One /v1/messages call; returns {usage, toolUses, text, status}. */
-  async message({ system, tools, messages, model = 'claude-sonnet-4-5-20250929', stream = true, maxTokens = 32000 }) {
+  async message({ system, tools, messages, model = 'claude-sonnet-4-5-20250929', stream = true, maxTokens = 32000, speed }) {
     const body = { model, max_tokens: maxTokens, stream, system, messages, metadata: this.metadata() };
+    if (speed) body.speed = speed; // Claude Code fast mode
     if (tools) { body.tools = tools; body.tool_choice = { type: 'auto' }; }
     const res = await fetch(`${GW}/anthropic/v1/messages?beta=true`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
     const text = await res.text();
@@ -172,6 +173,41 @@ class ClaudeSession {
     msgs.push({ role: 'assistant', content: [{ type: 'text', text: r2.text || 'done' }] });
   }
 
+  /**
+   * Main agent fans out to several subagents at once (parallel Task calls). Each subagent runs its own loop of three
+   * requests (Read, then Grep, then its answer), so its context grows independently of the others.
+   */
+  async parallelTaskTurn(prompt, areas) {
+    const msgs = this.main;
+    msgs.push({ role: 'user', content: [{ type: 'text', text: `${prompt} [[tool:Task*${areas.length}]]` }] });
+    const r1 = await this.message({ system: MAIN_SYSTEM(this.billing), tools: CC_TOOLS, messages: msgs });
+    if (r1.toolUses.length !== areas.length) throw new Error(`expected ${areas.length} Task calls, got ${r1.toolUses.length}`);
+    const results = await Promise.all(areas.map(async (area) => {
+      const sub = [{ role: 'user', content: [{ type: 'text', text: `Audit the ${area} module and report findings. [[tool:Read]]` }] }];
+      for (const [tool, output] of [['Read', `// ${area}.ts\n` + `export function ${area}() { /* ... */ }\n`.repeat(60)], ['Grep', `${area}.ts:12: TODO\n`.repeat(40)]]) {
+        const r = await this.message({ system: SUB_SYSTEM(this.billing), tools: SUBAGENT_TOOLS, messages: sub });
+        const call = r.toolUses[0];
+        if (!call) throw new Error(`subagent ${area} did not call ${tool}`);
+        sub.push({ role: 'assistant', content: [{ type: 'tool_use', id: call.id, name: call.name, input: call.input }] });
+        sub.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: output }, ...(tool === 'Read' ? [{ type: 'text', text: '[[tool:Grep]]' }] : [])] });
+      }
+      return (await this.message({ system: SUB_SYSTEM(this.billing), tools: SUBAGENT_TOOLS, messages: sub })).text || 'done';
+    }));
+    msgs.push({ role: 'assistant', content: r1.toolUses.map((t) => ({ type: 'tool_use', id: t.id, name: t.name, input: t.input })) });
+    msgs.push({ role: 'user', content: r1.toolUses.map((t, i) => ({ type: 'tool_result', tool_use_id: t.id, content: results[i] })) });
+    const r2 = await this.message({ system: MAIN_SYSTEM(this.billing), tools: CC_TOOLS, messages: msgs });
+    msgs.push({ role: 'assistant', content: [{ type: 'text', text: r2.text || 'done' }] });
+  }
+
+  /** A long plain answer from the main agent, in standard or fast mode (`speed: "fast"`), to compare output speed. */
+  async speedTurn(prompt, speed) {
+    const msgs = this.main;
+    msgs.push({ role: 'user', content: [{ type: 'text', text: `${prompt} [[no-tool]] [[out:200]]` }] });
+    const r = await this.message({ system: MAIN_SYSTEM(this.billing), tools: CC_TOOLS, messages: msgs, speed });
+    msgs.push({ role: 'assistant', content: [{ type: 'text', text: r.text || 'done' }] });
+    return r;
+  }
+
   /** Title generation as Claude Code does it: small model, no tools, not streamed. */
   async utility(text) {
     return this.message({
@@ -215,12 +251,13 @@ class CodexSession {
       'user-agent': `codex_cli_rs/${CODEX_VERSION} (Mac OS 15.6.0; arm64) iTerm.app/3.6.1`,
     };
   }
-  async respond() {
+  async respond(serviceTier) {
     const body = {
       model: 'gpt-5-codex', instructions: CODEX_INSTRUCTIONS, input: this.input, tools: CODEX_TOOLS,
       tool_choice: 'auto', parallel_tool_calls: false, reasoning: { effort: 'medium', summary: 'auto' },
       store: false, stream: true, include: ['reasoning.encrypted_content'], prompt_cache_key: this.id,
     };
+    if (serviceTier) body.service_tier = serviceTier; // Codex fast mode sends e.g. "priority"
     const res = await fetch(`${GW}/openai/v1/responses`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
     const text = await res.text();
     if (res.status !== 200) throw new Error(`responses ${res.status} ${text}`);
@@ -238,6 +275,11 @@ class CodexSession {
     const r = await this.respond();
     for (const c of r.calls) this.input.push({ type: 'function_call_output', call_id: c.call_id, output: JSON.stringify({ output: 'README.md\nsrc\n', metadata: { exit_code: 0 } }) });
     if (r.calls.length) await this.respond();
+  }
+  /** A long plain answer, in standard or fast mode, to compare output speed. */
+  async speedTurn(prompt, serviceTier) {
+    this.input.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: `${prompt} [[no-tool]] [[out:200]]` }] });
+    await this.respond(serviceTier);
   }
 }
 
@@ -287,6 +329,7 @@ async function main() {
   const s1 = new ClaudeSession(key);
   await s1.utility('Refactor the session store to use SQLite');
   await s1.taskTurn('Find where sessions are stored and summarize it.');
+  await s1.parallelTaskTurn('Audit the payment flow.', ['auth', 'billing', 'search']);
   await admin('PATCH', `/api/accounts/${K}`, { priority: 1 });
   const s2 = new ClaudeSession(key);
   await s2.bashTurn('Run the tests');
@@ -301,6 +344,14 @@ async function main() {
   const c2 = new CodexSession(key);
   await c2.turn('Explain the build script');
   await admin('PATCH', `/api/accounts/${O}`, { enabled: true });
+  // Speed modes: the same models in standard and fast mode (the fakes generate 2.5× faster in fast mode).
+  for (let i = 0; i < 2; i++) {
+    await s2.speedTurn(`Explain the design, part ${i}`);
+    await s2.speedTurn(`Explain the design quickly, part ${i}`, 'fast');
+    await c1.speedTurn(`Summarize the module, part ${i}`);
+    await c1.speedTurn(`Summarize the module quickly, part ${i}`, 'priority');
+  }
+  await c2.speedTurn('Summarize the README quickly', 'fast');
   // Concurrent agents: both providers in parallel, streams slowed so they overlap.
   await Promise.all([c1.turn('Run the linter [[slow:20]]'), c2.turn('Show git status [[slow:20]]'), s2.bashTurn('Check formatting [[slow:20]]')]);
 
@@ -355,7 +406,41 @@ async function main() {
   eq('C1 sticky on one account', sess(c1)?.accountsUsed, 1);
   eq('C2 sticky on one account', sess(c2)?.accountsUsed, 1);
   eq('S1 used two accounts (moved by maximize)', sess(s1)?.accountsUsed, 2);
-  eq('S1 agents: main + subagent + utility', sess(s1)?.agents, 3);
+  eq('S1 agents: main + 4 subagents + utility', sess(s1)?.agents, 6);
+
+  // Per-agent series: one line per agent instance in S1, starting at its first request.
+  const ctx = await admin('GET', `/api/analytics/agent-series?${from}&sessionId=${s1.id}&metric=contextMax&limit=20`);
+  const byRole = (r) => ctx.agents.filter((a) => a.role === r);
+  eq('S1 per-agent context series: one per agent instance', ctx.agents.length, 6);
+  eq('S1 per-agent series: 1 main', byRole('main').length, 1);
+  eq('S1 per-agent series: 4 subagents', byRole('subagent').length, 4);
+  const mainFirst = byRole('main')[0]?.firstSeen ?? Infinity;
+  const parallel = byRole('subagent').filter((a) => a.points.length === 3);
+  eq('parallel subagents each have their own 3-request series', parallel.length, 3);
+  check('subagents appear after the main agent', byRole('subagent').every((a) => a.firstSeen > mainFirst));
+  check('each parallel subagent context grows', parallel.every((a) => a.points[0][1] < a.points[1][1] && a.points[1][1] < a.points[2][1]),
+    parallel.map((a) => a.points.map((p) => p[1]).join('>')).join(' | '));
+  const overlapping = parallel.every((a) => parallel.every((b) => a === b || (a.firstSeen <= b.lastSeen && b.firstSeen <= a.lastSeen)));
+  check('parallel subagents overlap in time', overlapping);
+  check('agent labels name session and role', ctx.agents.every((a) => a.label.startsWith(s1.id.slice(0, 8)) && a.label.includes(a.role)), ctx.agents.map((a) => a.label).join(', '));
+  const cumReq = await admin('GET', `/api/analytics/agent-series?${from}&sessionId=${s1.id}&metric=requests`);
+  check('per-agent request counts are running totals', cumReq.cumulative && cumReq.agents.every((a) => a.points.at(-1)[1] === a.requests));
+
+  // Output speed and speed modes.
+  const modeRows = (await admin('GET', `/api/analytics/breakdown?${from}&by=modelMode`)).rows;
+  const tpsOf = (k) => modeRows.find((r) => r.key === k)?.tokensPerSecond ?? null;
+  for (const model of ['claude-sonnet-4-5-20250929', 'gpt-5-codex']) {
+    const std = tpsOf(`${model}|standard`), fast = tpsOf(`${model}|fast`);
+    check(`${model}: tokens/s measured in standard and fast mode`, std > 0 && fast > 0, `standard ${std}, fast ${fast}`);
+    check(`${model}: fast mode is faster than standard`, fast > 1.5 * std, `standard ${std}, fast ${fast}`);
+  }
+  const speedRows = (await admin('GET', `/api/analytics/breakdown?${from}&by=speedMode`)).rows;
+  check('speed modes recorded', ['standard', 'fast'].every((m) => speedRows.some((r) => r.key === m)), speedRows.map((r) => `${r.key}:${r.requests}`).join(', '));
+  eq('fast-mode requests counted', speedRows.find((r) => r.key === 'fast')?.requests, 5);
+  const tpsTs = await admin('GET', `/api/analytics/timeseries?${from}&metric=tokensPerSecondP95&groupBy=modelMode`);
+  check('tokens/s p95 timeseries by model and mode', tpsTs.series.some((x) => x.id.endsWith('|fast') && x.total > 0), tpsTs.series.map((x) => x.label).join(', '));
+  const sum = await admin('GET', `/api/analytics/summary?${from}`);
+  check('summary tokens/s with p50 <= p95', sum.tokensPerSecond > 0 && sum.tokensPerSecondP50 <= sum.tokensPerSecondP95, `${sum.tokensPerSecond} (${sum.tokensPerSecondP50}/${sum.tokensPerSecondP95})`);
 
   const fakeReqs = { anthropic: await fake('GET', '/fake-admin/anthropic/requests'), openai: await fake('GET', '/fake-admin/openai/requests') };
   const acctOf = (provider, sessionId, pathPrefix) => [...new Set(fakeReqs[provider].filter((r) => r.path.startsWith(pathPrefix) && r.body.includes(sessionId) && r.statusCode === 200).map((r) => r.accountId))];
@@ -390,6 +475,8 @@ async function main() {
 
   const log = (await admin('GET', '/api/analytics/requests?limit=500')).items;
   check('request log has both clients', ['claude-code', 'codex'].every((c) => log.some((r) => r.client === c)));
+  check('request log keeps raw speed values', log.some((r) => r.requestedSpeed === 'fast' && r.reportedSpeed === 'fast' && r.speedMode === 'fast')
+    && log.some((r) => r.requestedSpeed === 'priority' && r.reportedSpeed === 'priority' && r.speedMode === 'fast'));
   check('gateway-retried attempts visible in log', log.some((r) => r.retried));
 
   console.log(`\n${passes.length} passed, ${failures.length} failed`);

@@ -42,6 +42,12 @@ export function fmtMs(v: number | null | undefined): string {
   return fmtDuration(v)
 }
 
+/** Output speed: "84 tok/s", "1.2k tok/s". */
+export function fmtTps(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '—'
+  return `${v >= 1000 ? fmtCompact(v) : v >= 100 ? Math.round(v) : v.toFixed(1)} tok/s`
+}
+
 export function fmtDuration(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000))
   const d = Math.floor(s / 86400)

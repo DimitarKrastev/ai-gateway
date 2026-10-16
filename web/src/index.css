@@ -248,6 +248,7 @@ button.icon { background: none; color: var(--muted); font-size: 1.3rem; line-hei
 .setting p { margin: 4px 0 0 42px; max-width: 760px; }
 
 .chart { width: 100%; }
+.chart-note { margin: 6px 0 0; }
 
 @media (max-width: 720px) {
   .topbar { flex-wrap: wrap; height: auto; padding: 8px 12px; gap: 8px; }

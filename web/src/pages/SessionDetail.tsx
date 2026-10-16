@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { qs } from '../api'
 import BreakdownTable from '../components/BreakdownTable'
-import { TimeChart } from '../components/charts'
+import { AgentChart, TimeChart } from '../components/charts'
 import { PageHead } from '../components/Layout'
 import RequestsTable from '../components/RequestsTable'
 import RoutingEvents from '../components/RoutingEvents'
@@ -10,7 +10,7 @@ import { Async, Empty, Kpi, Panel } from '../components/ui'
 import { fmtCompact, fmtDateTime, fmtDuration, fmtInt, fmtUsd, toMs } from '../format'
 import { useApi } from '../hooks'
 import { metricLabels } from '../metrics'
-import type { Account, BreakdownRow, RequestRow, RoutingEvent, Summary, Timeseries } from '../types'
+import type { Account, AgentSeriesResult, BreakdownRow, RequestRow, RoutingEvent, Summary, Timeseries } from '../types'
 
 export default function SessionDetail() {
   const { provider = '', sessionId = '' } = useParams()
@@ -30,7 +30,8 @@ export default function SessionDetail() {
     span && `/api/analytics/timeseries${qs({ ...span, metric: 'inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens' })}`,
     10_000,
   )
-  const context = useApi<Timeseries>(span && `/api/analytics/timeseries${qs({ ...span, metric: 'contextMax', groupBy: 'agentId' })}`, 10_000)
+  // One line per agent instance, a point per request: when each agent appeared and how its context grew.
+  const context = useApi<AgentSeriesResult>(span && `/api/analytics/agent-series${qs({ ...span, metric: 'contextMax', limit: 20 })}`, 10_000)
   const agents = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ ...filter, by: 'agentId' })}`, 10_000)
   const tools = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ ...filter, by: 'tool' })}`, 10_000)
   const requests = useApi<{ items: RequestRow[] }>(`/api/analytics/requests${qs({ ...filter, limit: 200, includeRetried: true })}`, 10_000)
@@ -76,7 +77,7 @@ export default function SessionDetail() {
           <Async state={tokens} empty={() => (span ? null : <Empty>No requests recorded.</Empty>)}>{(d) => <TimeChart data={d} mode="stack" format={fmtCompact} labels={metricLabels(d)} height={220} />}</Async>
         </Panel>
         <Panel title="Context size by agent">
-          <Async state={context} empty={() => (span ? null : <Empty>No requests recorded.</Empty>)}>{(d) => <TimeChart data={d} mode="line" format={fmtCompact} height={220} />}</Async>
+          <Async state={context} empty={() => (span ? null : <Empty>No requests recorded.</Empty>)}>{(d) => <AgentChart data={d} format={fmtCompact} height={220} sessionScoped />}</Async>
         </Panel>
       </div>
 

@@ -106,6 +106,10 @@ export type Summary = {
   avgContextTokens: number | null
   maxContextTokens: number | null
   avgLatencyMs: number | null
+  tokensPerSecond: number | null
+  tokensPerSecondP50: number | null
+  tokensPerSecondP95: number | null
+  throughputRequests: number
   sessions: number
   agents: number
   models: number
@@ -146,6 +150,34 @@ export type BreakdownRow = {
   agents: number
   firstSeen: Time
   lastSeen: Time
+  /** Output-token-weighted mean tokens/second; null when no request has a throughput. */
+  tokensPerSecond: number | null
+  tokensPerSecondP50: number | null
+  tokensPerSecondP95: number | null
+  throughputRequests: number
+}
+
+export type AgentSeries = {
+  key: string
+  id: string
+  label: string
+  sessionId: string | null
+  role: string | null
+  client: string | null
+  firstSeen: number
+  lastSeen: number
+  requests: number
+  /** [startedAt, value] per request (thinned for very long agents). */
+  points: Array<[number, number]>
+}
+export type AgentSeriesResult = {
+  metric: string
+  cumulative: boolean
+  from: number
+  to: number
+  totalAgents: number
+  hidden: number
+  agents: AgentSeries[]
 }
 
 export type SessionRow = {
@@ -206,6 +238,12 @@ export type RequestRow = {
   completedAt: Time
   latencyMs: number | null
   ttfbMs: number | null
+  firstTokenMs: number | null
+  generationMs: number | null
+  requestedSpeed: string | null
+  reportedSpeed: string | null
+  speedMode: string | null
+  tokensPerSecond: number | null
 }
 
 export type LiveRequest = {

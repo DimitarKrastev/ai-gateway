@@ -170,9 +170,10 @@ never used automatically. Every session move and reset use is listed under **Ses
 ## Analytics
 
 The UI's **Overview**, **Analytics**, **Sessions** and **Requests** pages show, over any time range and broken down by
-provider, account, session, agent, model, client or tool:
+provider, account, session, agent type, agent instance, model, speed mode, model + mode, client or tool:
 cost, requests, errors, input/output/cache-read/cache-write/reasoning tokens, cache hit rate, context size (avg/max),
-tool calls, latency/TTFB, active and concurrent agents/requests, plus a live in-flight view and a per-request log.
+tool calls, latency/TTFB, output tokens/second, active and concurrent agents/requests, plus a live in-flight view and a
+per-request log.
 
 Notes:
 - **Cost** uses a built-in table of public API list prices (USD per million tokens, longest model-prefix match). For
@@ -183,6 +184,20 @@ Notes:
   subagents). Claude Code: an agent is identified by its system prompt + first user message within a session; a request
   without tools is a *utility* call (titles, summaries), an agent that offers the `Task`/`Agent` tool is *main*, other
   tool-using agents are *subagents*. Concurrency counts overlapping in-flight requests/agents.
+- **Output speed** (tokens/second) per request = output tokens ÷ generation time. Streaming: from the first output
+  token event to the end of the stream (queueing and prompt processing excluded). Non-streaming: the whole latency, an
+  approximation that reads slower. Only successful, non-cancelled requests with output count. Aggregates are the
+  output-token-weighted mean plus p50/p95; the Analytics page charts them over time and per model × mode.
+- **Speed modes** are taken from the request (Anthropic `speed: "fast"`; OpenAI/Codex `service_tier` `fast`/`priority`
+  → fast, `flex` → flex, absent/`auto`/`default` → standard) and from the response (Anthropic `usage.speed`, OpenAI
+  `service_tier`), which wins when present. Raw values are kept per request. Requests recorded before this was tracked
+  show mode `unknown` and no output speed.
+- **Per agent:** grouping a chart by *Agent (each instance)* draws one line per agent instance with a point per request
+  (`/api/analytics/agent-series`), so you see when each agent appeared and, e.g., how its context grew; sum metrics can be
+  shown as running totals. The 12 busiest agents are drawn (filter by session to narrow); click legend entries to hide
+  lines. Metrics without a per-request value (concurrency, active counts) fall back to bucketed series per agent. A
+  client-sent `x-claude-code-agent-id` header, when present, identifies a Claude Code agent instance directly; a Codex
+  `prompt_cache_key` that differs from the session id marks a separate thread.
 - `count_tokens` and `models` calls are logged as requests with zero tokens and no session/agent.
 - Requests the gateway retried on another account after a 429 are shown in the request log but excluded from totals.
 
@@ -207,6 +222,10 @@ It then checks, via the gateway's APIs and the fakes' request logs, that tokens 
 sessions per provider equal what the fakes reported, cost is non-zero, agents/models/tools/accounts appear, sessions are
 sticky, credentials were injected (the client key never reaches a provider), limits are populated and routing/reset
 events happened. Only processes started by the script are stopped.
+
+The e2e fakes generate at `E2E_FAKE_TPS` output tokens/s (default 1500; fast mode 2.5×). Prompt triggers
+`[[tps:N]]` (speed) and `[[ttft:MS]]` (wait before the first token) set them per request; fakes echo fast mode as
+`usage.speed` (Anthropic) or `service_tier: "priority"` (OpenAI).
 
 The fakes can also be run alone: `FAKES_PORT=6202 dotnet src/Gateway.Fakes/bin/Release/net10.0/Gateway.Fakes.dll`
 (control API under `/fake-admin`).

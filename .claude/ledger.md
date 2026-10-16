@@ -63,3 +63,11 @@
 - **Interface changes:** `requests.session_id` is NULL for non-generation rows that have a derived session.
 - **Follow-ups:** none.
 - **Learnings:** Admin password is in `data/admin-password.txt`. `scripts/stop.sh` and `restart.sh` manage the instance.
+
+## Item 9 — Tokens/second, speed modes, per-agent series
+- **Status:** done
+- **Evidence:** `dotnet build` 0 warnings/0 errors; `dotnet test` 86/86 (19 new in `ThroughputTests`); `npm run lint` clean; `AUX_PORTS=6300-6359 scripts/e2e.sh` 95/95. Browser pass (Playwright, desktop + 390 px) on the e2e instance: Analytics speed charts, per-agent context chart, session detail, request log; only the expected pre-login 401.
+- **Decisions:** Generation time = first output delta → end of stream (JSON: whole latency). Mode = reported value, else requested, else standard. Aggregate = output-token-weighted mean + in-memory p50/p95. Per-agent split = per-request points via a new endpoint; bucket metrics without per-request meaning fall back to `groupBy=agentId`.
+- **Interface changes:** migration v5 (5 nullable `requests` columns); metrics `tokensPerSecond[P50|P95]`; groups/filter `speedMode`, `modelMode`; `/api/analytics/agent-series`; new breakdown/summary/request fields; agent labels `session8 · role · instance`. Shapes: `.claude/ledger/analytics.md`.
+- **Follow-ups:** Codex subagent threads with their own `session_id` header still form their own sessions (session identification unchanged).
+- **Learnings:** Fakes: `[[tps:N]]`, `[[ttft:MS]]`, `[[tool:NAME*N]]`, `Fakes__TokensPerSecond`; e2e sets 1500 tok/s.

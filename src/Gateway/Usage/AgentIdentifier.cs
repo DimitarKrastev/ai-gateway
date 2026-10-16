@@ -11,7 +11,9 @@ public sealed record AgentIdentity(string Id, string Role);
 /// <summary>
 /// Attributes generation requests to agents within a session.
 /// <list type="bullet">
-/// <item>Codex: one agent per session, or <c>subagent:&lt;kind&gt;</c> when the request carries <c>x-openai-subagent</c>.</item>
+/// <item>Codex: one agent per session (thread), or <c>subagent:&lt;kind&gt;</c> when the request carries <c>x-openai-subagent</c>;
+/// when its <c>prompt_cache_key</c> (Codex's thread id) differs from the session id, the thread is a separate instance.</item>
+/// <item>A client-supplied agent-instance header (<see cref="RequestInfo.AgentIdHeaders"/>) replaces the prompt hash below.</item>
 /// <item>Claude Code and others: an agent instance is identified by its system prompt prefix plus its first user message
 /// prefix (both stay constant over an agent's life; parallel subagents differ in their task prompt). Role: requests
 /// without tools are <c>utility</c> calls (titles, summaries); an agent offered the <c>Task</c>/<c>Agent</c> tool is
@@ -39,13 +41,14 @@ public sealed class AgentIdentifier(Database db)
         if (info.Client == "codex")
         {
             var role = info.SubagentHint is { } hint ? $"subagent:{hint}" : "main";
-            return new AgentIdentity($"{sessionPrefix}:{role}", role);
+            var instance = info.AgentHeader ?? (info.PromptCacheKey is { } t && t != ctx.SessionId ? Hash(t)[..8] : null);
+            return new AgentIdentity(instance != null ? $"{sessionPrefix}:{role}@{instance}" : $"{sessionPrefix}:{role}", role);
         }
 
         if (info.ToolNames.Count == 0)
             return new AgentIdentity($"{sessionPrefix}:utility", "utility");
 
-        var key = Hash(info.SystemPrefix + "\u0000" + info.FirstUserPrefix);
+        var key = info.AgentHeader is { } explicitId ? "a-" + Hash(explicitId) : Hash(info.SystemPrefix + "\u0000" + info.FirstUserPrefix);
         var id = $"{sessionPrefix}:{key}";
         var state = _sessions.GetOrAdd(sessionPrefix, _ => Load(ctx.Provider, ctx.SessionId));
         lock (state)

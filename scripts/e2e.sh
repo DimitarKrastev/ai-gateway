@@ -69,7 +69,8 @@ wait_up() {
 }
 
 echo "fakes on $FAKES_PORT, gateway on $GW_PORT, work dir $WORK"
-FAKES_PORT=$FAKES_PORT AUX_PORTS=$AUX dotnet "$FAKES_DLL" >"$WORK/fakes.log" 2>&1 &
+# Fakes generate at E2E_FAKE_TPS output tokens/s (fast mode 2.5x) so recorded output speeds are realistic.
+FAKES_PORT=$FAKES_PORT AUX_PORTS=$AUX Fakes__TokensPerSecond=${E2E_FAKE_TPS:-1500} dotnet "$FAKES_DLL" >"$WORK/fakes.log" 2>&1 &
 PIDS+=($!)
 GATEWAY_PORT=$GW_PORT GATEWAY_DATA_DIR="$WORK/data" GATEWAY_ADMIN_PASSWORD=$PASSWORD \
 GATEWAY_UPSTREAM_ANTHROPIC_API=$FAKES_URL GATEWAY_UPSTREAM_ANTHROPIC_AUTH=$FAKES_URL \

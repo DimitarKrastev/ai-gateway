@@ -181,6 +181,10 @@ public static class OpenAIFake
         var usage = new TokenUsage(total, cached, turn.OutputTokens + reasoning, reasoning);
 
         if (!await AdmitAsync(ctx, state, acct, usage, chatgpt)) return;
+        var mode = FakeSpeed.Mode(body.Str("service_tier"));
+        var tier = ServedTier(mode);
+        var generationMs = FakeSpeed.GenerationMs(turn, state.Options, mode, usage.Output);
+        var firstTokenDelay = turn.FirstTokenDelayMs ?? 0;
 
         var respId = "resp_" + FakeProviderState.RandomToken(24).Replace("-", "a").Replace("_", "b");
         var created = state.Now.ToUnixTimeSeconds();
@@ -197,6 +201,7 @@ public static class OpenAIFake
             ["incomplete_details"] = null, ["instructions"] = body.Str("instructions"), ["model"] = model, ["output"] = output,
             ["parallel_tool_calls"] = true, ["previous_response_id"] = body.Str("previous_response_id"),
             ["prompt_cache_key"] = body.Str("prompt_cache_key"), ["store"] = body.Prop("store")?.ValueKind == JsonValueKind.True,
+            ["service_tier"] = tier,
             ["usage"] = withUsage ? new
             {
                 input_tokens = usage.Input, input_tokens_details = new { cached_tokens = usage.Cached },
@@ -207,6 +212,8 @@ public static class OpenAIFake
 
         if (!stream)
         {
+            var wait = firstTokenDelay + generationMs;
+            if (wait >= 1) await Task.Delay(TimeSpan.FromMilliseconds(wait));
             await ctx.Response.WriteAsJsonAsync(Response("completed", items, true));
             return;
         }
@@ -222,6 +229,9 @@ public static class OpenAIFake
         }
         await Emit("response.created", new() { ["response"] = Response("in_progress", [], false) });
         await Emit("response.in_progress", new() { ["response"] = Response("in_progress", [], false) });
+        if (firstTokenDelay > 0) await Task.Delay(firstTokenDelay);
+        var pacer = new FakePacer(generationMs, items.Sum(item => (string)item["type"]! == "message"
+            ? AnthropicFake.Chunks(turn.Text, 24).Count() : AnthropicFake.Chunks((string)item["arguments"]!, 12).Count()));
         for (var i = 0; i < items.Count; i++)
         {
             var item = items[i];
@@ -231,7 +241,10 @@ public static class OpenAIFake
                 await Emit("response.output_item.added", new() { ["output_index"] = i, ["item"] = new { id, type = "message", status = "in_progress", role = "assistant", content = Array.Empty<object>() } });
                 await Emit("response.content_part.added", new() { ["item_id"] = id, ["output_index"] = i, ["content_index"] = 0, ["part"] = new { type = "output_text", text = "", annotations = Array.Empty<object>() } });
                 foreach (var chunk in AnthropicFake.Chunks(turn.Text, 24))
+                {
+                    await pacer.BeforeDeltaAsync();
                     await Emit("response.output_text.delta", new() { ["item_id"] = id, ["output_index"] = i, ["content_index"] = 0, ["delta"] = chunk, ["logprobs"] = Array.Empty<object>() });
+                }
                 await Emit("response.output_text.done", new() { ["item_id"] = id, ["output_index"] = i, ["content_index"] = 0, ["text"] = turn.Text, ["logprobs"] = Array.Empty<object>() });
                 await Emit("response.content_part.done", new() { ["item_id"] = id, ["output_index"] = i, ["content_index"] = 0, ["part"] = new { type = "output_text", text = turn.Text, annotations = Array.Empty<object>() } });
             }
@@ -240,11 +253,15 @@ public static class OpenAIFake
                 var args = (string)item["arguments"]!;
                 await Emit("response.output_item.added", new() { ["output_index"] = i, ["item"] = new { id, type = "function_call", status = "in_progress", name = item["name"], call_id = item["call_id"], arguments = "" } });
                 foreach (var part in AnthropicFake.Chunks(args, 12))
+                {
+                    await pacer.BeforeDeltaAsync();
                     await Emit("response.function_call_arguments.delta", new() { ["item_id"] = id, ["output_index"] = i, ["delta"] = part });
+                }
                 await Emit("response.function_call_arguments.done", new() { ["item_id"] = id, ["output_index"] = i, ["arguments"] = args });
             }
             await Emit("response.output_item.done", new() { ["output_index"] = i, ["item"] = item });
         }
+        await pacer.FinishAsync();
         await Emit("response.completed", new() { ["response"] = Response("completed", items, true) });
     }
 
@@ -295,6 +312,9 @@ public static class OpenAIFake
         var cached = state.CacheLookupAndStore(acct, Tokens.Hash(model, msgs[0].GetRawText()), total);
         var usage = new TokenUsage(total, cached, turn.OutputTokens, 0);
         if (!await AdmitAsync(ctx, state, acct, usage, chatgpt: false)) return;
+        var mode = FakeSpeed.Mode(body.Str("service_tier"));
+        var tier = ServedTier(mode);
+        var generationMs = FakeSpeed.GenerationMs(turn, state.Options, mode, usage.Output);
 
         var id = "chatcmpl-" + FakeProviderState.RandomToken(18).Replace("-", "a").Replace("_", "b");
         var created = state.Now.ToUnixTimeSeconds();
@@ -307,9 +327,11 @@ public static class OpenAIFake
 
         if (!body.Bool("stream"))
         {
+            var wait = (turn.FirstTokenDelayMs ?? 0) + generationMs;
+            if (wait >= 1) await Task.Delay(TimeSpan.FromMilliseconds(wait));
             await ctx.Response.WriteAsJsonAsync(new
             {
-                id, @object = "chat.completion", created, model,
+                id, @object = "chat.completion", created, model, service_tier = tier,
                 choices = new[]
                 {
                     new
@@ -334,21 +356,33 @@ public static class OpenAIFake
         var sse = new SseWriter(ctx.Response, turn.DelayMs ?? state.Options.StreamChunkDelayMs);
         Task Chunk(object delta, string? finishReason) => sse.EventAsync(null, new Dictionary<string, object?>
         {
-            ["id"] = id, ["object"] = "chat.completion.chunk", ["created"] = created, ["model"] = model,
+            ["id"] = id, ["object"] = "chat.completion.chunk", ["created"] = created, ["model"] = model, ["service_tier"] = tier,
             ["choices"] = new[] { new { index = 0, delta, finish_reason = finishReason } },
             ["usage"] = includeUsage ? null : Missing,
         }.Where(kv => kv.Value != Missing).ToDictionary());
 
         await Chunk(new { role = "assistant", content = "" }, null);
+        if (turn.FirstTokenDelayMs is > 0) await Task.Delay(turn.FirstTokenDelayMs.Value);
+        var pacer = new FakePacer(generationMs, turn.ToolCalls.Count == 0
+            ? AnthropicFake.Chunks(turn.Text, 24).Count() : turn.ToolCalls.Sum(t => 1 + AnthropicFake.Chunks(t.InputJson, 12).Count()));
         if (turn.ToolCalls.Count == 0)
-            foreach (var part in AnthropicFake.Chunks(turn.Text, 24)) await Chunk(new { content = part }, null);
+            foreach (var part in AnthropicFake.Chunks(turn.Text, 24))
+            {
+                await pacer.BeforeDeltaAsync();
+                await Chunk(new { content = part }, null);
+            }
         for (var i = 0; i < turn.ToolCalls.Count; i++)
         {
             var t = turn.ToolCalls[i];
+            await pacer.BeforeDeltaAsync();
             await Chunk(new { tool_calls = new[] { new { index = i, id = t.Id, type = "function", function = new { name = t.Name, arguments = "" } } } }, null);
             foreach (var part in AnthropicFake.Chunks(t.InputJson, 12))
+            {
+                await pacer.BeforeDeltaAsync();
                 await Chunk(new { tool_calls = new[] { new { index = i, function = new { arguments = part } } } }, null);
+            }
         }
+        await pacer.FinishAsync();
         await Chunk(new { }, finish);
         if (includeUsage)
             await sse.EventAsync(null, new { id, @object = "chat.completion.chunk", created, model, choices = Array.Empty<object>(), usage = usageJson });
@@ -356,6 +390,9 @@ public static class OpenAIFake
     }
 
     private static readonly object Missing = new();
+
+    /// <summary>The tier a response reports: fast mode is served as <c>priority</c>, like the API's service_tier values.</summary>
+    private static string ServedTier(string mode) => mode switch { FakeSpeed.Fast => "priority", FakeSpeed.Flex => "flex", _ => "default" };
 
     // ---------- ChatGPT usage, resets, models ----------
 

@@ -49,11 +49,24 @@ public sealed record RequestInfo(
 {
     private const int PrefixChars = 512;
 
+    /// <summary>Raw requested speed: Anthropic <c>speed</c>, OpenAI <c>service_tier</c>. Null when absent (standard).</summary>
+    public string? RequestedSpeed { get; init; }
+
+    /// <summary>Explicit agent-instance id sent by the client (Claude Code <c>x-claude-code-agent-id</c>), when present.</summary>
+    public string? AgentHeader { get; init; }
+
+    /// <summary>OpenAI <c>prompt_cache_key</c>; Codex uses its thread id here.</summary>
+    public string? PromptCacheKey { get; init; }
+
+    /// <summary>Header names that carry an explicit agent-instance id, in order of preference.</summary>
+    public static readonly string[] AgentIdHeaders = ["x-claude-code-agent-id", "x-agent-id"];
+
     public static RequestInfo Parse(ProxiedRequestContext ctx)
     {
         var endpoint = Endpoints.Classify(ctx.Provider, ctx.Path);
         var (client, version) = ParseClient(ctx.RequestHeaders);
         var subagent = ctx.RequestHeaders.GetValueOrDefault("x-openai-subagent");
+        var agentHeader = AgentIdHeaders.Select(h => ctx.RequestHeaders.GetValueOrDefault(h)).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v))?.Trim();
         JsonElement? root = null;
         if (ctx.RequestBody.Length > 0 && (Endpoints.IsGeneration(endpoint) || endpoint == Endpoints.CountTokens))
         {
@@ -61,13 +74,21 @@ public sealed record RequestInfo(
             catch (JsonException) { }
         }
         if (root is not { ValueKind: JsonValueKind.Object } body)
-            return new RequestInfo(endpoint, null, false, client, version, subagent, [], "", "");
+            return new RequestInfo(endpoint, null, false, client, version, subagent, [], "", "") { AgentHeader = agentHeader };
 
         var model = body.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
         var stream = body.TryGetProperty("stream", out var s) && s.ValueKind == JsonValueKind.True;
         return new RequestInfo(endpoint, model, stream, client, version, string.IsNullOrEmpty(subagent) ? null : subagent,
-            ReadToolNames(body), Truncate(SystemText(body)), Truncate(FirstUserText(body)));
+            ReadToolNames(body), Truncate(SystemText(body)), Truncate(FirstUserText(body)))
+        {
+            RequestedSpeed = ScalarText(body, ctx.Provider == Providers.Anthropic ? "speed" : "service_tier"),
+            AgentHeader = agentHeader,
+            PromptCacheKey = Str(body, "prompt_cache_key") is { Length: > 0 } pck ? pck : null,
+        };
     }
+
+    private static string? ScalarText(JsonElement body, string name) =>
+        body.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String && v.GetString() is { Length: > 0 } s ? s.Trim() : null;
 
     /// <summary>Claude Code sends <c>claude-cli/&lt;ver&gt;</c>, Codex <c>codex_cli_rs/&lt;ver&gt;</c> (and <c>originator</c>).</summary>
     public static (string Client, string? Version) ParseClient(IReadOnlyDictionary<string, string> headers)

@@ -17,6 +17,8 @@ public sealed class ResponseUsage
     public bool HasUsage { get; set; }
     public string? StopReason { get; set; }
     public string? ErrorType { get; set; }
+    /// <summary>Raw speed the provider reports it served: Anthropic <c>usage.speed</c>, OpenAI <c>service_tier</c>.</summary>
+    public string? ReportedSpeed { get; set; }
     public Dictionary<string, int> Tools { get; } = new(StringComparer.Ordinal);
     public int ToolCalls => Tools.Values.Sum();
 }
@@ -43,6 +45,9 @@ public sealed class ResponseUsageParser
     private readonly HashSet<(int, int)> _chatToolCalls = new();
 
     public ResponseUsage Usage { get; } = new();
+
+    /// <summary>True once the stream has carried its first output (token delta) event.</summary>
+    public bool OutputStarted { get; private set; }
 
     public ResponseUsageParser(string endpoint, int status, string? contentType)
     {
@@ -116,6 +121,7 @@ public sealed class ResponseUsageParser
                 var name = Encoding.UTF8.GetString(line[6..]).Trim();
                 // Token deltas are the bulk of a stream and never carry usage.
                 _skipEvent = name.EndsWith(".delta") || name is "content_block_delta" or "ping";
+                if (_skipEvent && name != "ping") OutputStarted = true;
                 return;
             }
             if (line.StartsWith("data:"u8) && !_skipEvent)
@@ -151,6 +157,8 @@ public sealed class ResponseUsageParser
         if (e.ValueKind != JsonValueKind.Object) return;
         var type = Str(e, "type");
         if (type == "error") { Usage.ErrorType = ErrorTypeOf(e) ?? Str(e, "code") ?? "error"; return; }
+        // Streams without event: lines carry the type in the data only.
+        if (type != null && (type == "content_block_delta" || type.EndsWith(".delta"))) OutputStarted = true;
 
         switch (_endpoint)
         {
@@ -176,6 +184,7 @@ public sealed class ResponseUsageParser
                 {
                     case "response.created" or "response.in_progress" when Obj(e, "response") is { } r0:
                         Usage.Model = Str(r0, "model") ?? Usage.Model;
+                        Usage.ReportedSpeed = Str(r0, "service_tier") ?? Usage.ReportedSpeed;
                         break;
                     case "response.output_item.done" when Obj(e, "item") is { } item:
                         if (CountResponsesToolItem(item)) _streamedToolItems++;
@@ -222,6 +231,7 @@ public sealed class ResponseUsageParser
     private void HandleResponseObject(JsonElement r, bool countTools)
     {
         Usage.Model = Str(r, "model") ?? Usage.Model;
+        Usage.ReportedSpeed = Str(r, "service_tier") ?? Usage.ReportedSpeed;
         if (Str(r, "status") is { } status) Usage.StopReason = status;
         if (Obj(r, "error") is { } err) Usage.ErrorType = Str(err, "code") ?? Str(err, "type") ?? "error";
         if (Obj(r, "incomplete_details") is { } inc && Str(inc, "reason") is { } reason) Usage.StopReason = reason;
@@ -243,8 +253,10 @@ public sealed class ResponseUsageParser
     private void HandleChatChunk(JsonElement c)
     {
         Usage.Model = Str(c, "model") ?? Usage.Model;
+        Usage.ReportedSpeed = Str(c, "service_tier") ?? Usage.ReportedSpeed;
         if (c.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array)
         {
+            if (_format == Format.Sse && ChatChunkHasOutput(choices)) OutputStarted = true;
             foreach (var choice in choices.EnumerateArray())
             {
                 if (choice.ValueKind != JsonValueKind.Object) continue;
@@ -277,9 +289,19 @@ public sealed class ResponseUsageParser
         }
     }
 
+    private static bool ChatChunkHasOutput(JsonElement choices)
+    {
+        foreach (var choice in choices.EnumerateArray())
+            if (Obj(choice, "delta") is { } d
+                && (Str(d, "content") is { Length: > 0 } || Str(d, "reasoning_content") is { Length: > 0 } || d.TryGetProperty("tool_calls", out _)))
+                return true;
+        return false;
+    }
+
     /// <summary>Anthropic usage objects are cumulative snapshots: later values replace earlier ones.</summary>
     private void ApplyAnthropicUsage(JsonElement u)
     {
+        if (Str(u, "speed") is { } speed) Usage.ReportedSpeed = speed;
         if (Num(u, "input_tokens") is { } i) Usage.InputTokens = i;
         if (Num(u, "output_tokens") is { } o) Usage.OutputTokens = o;
         if (Num(u, "cache_read_input_tokens") is { } cr) Usage.CacheReadTokens = cr;

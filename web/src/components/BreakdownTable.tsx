@@ -1,5 +1,7 @@
 import type { BreakdownRow } from '../types'
-import { fmtCompact, fmtDateTime, fmtInt, fmtMs, fmtUsd } from '../format'
+import { fmtCompact, fmtDateTime, fmtInt, fmtMs, fmtTps, fmtUsd } from '../format'
+
+const HEADINGS: Record<string, string> = { agentId: 'Agent', agent: 'Agent type', speedMode: 'Speed mode', modelMode: 'Model · mode' }
 
 export default function BreakdownTable({
   by,
@@ -47,7 +49,7 @@ export default function BreakdownTable({
       <table className="table">
         <thead>
           <tr>
-            <th>{by[0].toUpperCase() + by.slice(1)}</th>
+            <th>{HEADINGS[by] ?? by[0].toUpperCase() + by.slice(1)}</th>
             <th className="num">Requests</th>
             <th className="num">Errors</th>
             <th className="num">Cost</th>
@@ -60,6 +62,10 @@ export default function BreakdownTable({
             <th className="num">Avg ctx</th>
             <th className="num">Max ctx</th>
             <th className="num">Avg latency</th>
+            <th className="num" title="Output tokens per second of generation, output-token-weighted average">
+              Tok/s
+            </th>
+            <th className="num">p95 tok/s</th>
             <th className="num">Sessions</th>
             <th className="num">Agents</th>
           </tr>
@@ -84,6 +90,13 @@ export default function BreakdownTable({
               <td className="num">{fmtCompact(r.avgContextTokens)}</td>
               <td className="num">{fmtCompact(r.maxContextTokens)}</td>
               <td className="num">{fmtMs(r.avgLatencyMs)}</td>
+              <td
+                className="num"
+                title={r.throughputRequests ? `p50 ${fmtTps(r.tokensPerSecondP50)} · ${fmtInt(r.throughputRequests)} measured requests` : ''}
+              >
+                {r.tokensPerSecond === null ? '—' : fmtTps(r.tokensPerSecond).replace(' tok/s', '')}
+              </td>
+              <td className="num">{r.tokensPerSecondP95 == null ? '—' : fmtTps(r.tokensPerSecondP95).replace(' tok/s', '')}</td>
               <td className="num">{fmtInt(r.sessions)}</td>
               <td className="num">{fmtInt(r.agents)}</td>
             </tr>

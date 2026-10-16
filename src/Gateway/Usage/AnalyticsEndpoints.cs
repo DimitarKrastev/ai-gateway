@@ -42,6 +42,17 @@ public static class AnalyticsEndpoints
                 });
         });
 
+        g.MapGet("/agent-series", (HttpRequest req, AnalyticsService a, TimeProvider t) =>
+        {
+            var q = req.Query;
+            var metric = q["metric"].ToString() is { Length: > 0 } m ? m : "contextMax";
+            var limit = int.TryParse(q["limit"], out var l) ? Math.Clamp(l, 1, 50) : 12;
+            var result = a.AgentSeries(AnalyticsFilter.FromQuery(q, t.GetUtcNow()), metric, q["cumulative"] == "true", limit);
+            return result != null
+                ? Results.Ok(result)
+                : Results.BadRequest(new { error = "Metric has no per-request value; use /timeseries?groupBy=agentId.", metrics = AnalyticsService.MetricNames });
+        });
+
         g.MapGet("/breakdown", (HttpRequest req, AnalyticsService a, TimeProvider t) =>
         {
             var by = req.Query["by"].ToString() is { Length: > 0 } b ? b : "model";
