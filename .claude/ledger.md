@@ -55,3 +55,11 @@
 - **Interface changes:** none.
 - **Follow-ups:** README/start scripts: set `GATEWAY_DATA_DIR` to a stable path. Fallback session hash makes non-UUID `metadata.user_id` sessions collapse — real Claude Code uses UUIDs, so e2e should too.
 - **Learnings:** Use small `[[slow:N]]` values (per event) in e2e.
+
+## Item 8 — E2E + delivery
+- **Status:** done
+- **Evidence:** `scripts/e2e.sh`: 77/77 checks pass (main tree and fresh clone). Fresh clone at a84abdc: `dotnet build` 0 warnings/0 errors, `dotnet test` 67/67, `npm run lint` exit 0, `npm run build` ok. Playwright pass on the `--keep` instance: all 6 pages show both providers' traffic, accounts, limits, resets, session moves; only console error is the expected pre-login 401. Running on 6200 from `publish/` (pid in `data/gateway.pid`, PPID 1, own session): `/api/health` 200, `/` serves UI, keyless `/anthropic` and `/openai` → 401 provider-format JSON, 0 accounts linked. Commits 45368b7, fedeb2e, a84abdc.
+- **Decisions:** e2e driver is dependency-free Node (`e2e/run.mjs`). Scripts' data dir is `<repo>/data` (override `GATEWAY_DATA_DIR`). Detach uses `nohup perl POSIX::setsid`. Fixes: (1) the selector left accounts that had just returned 429 out of the reset pool, so it redeemed the wrong credit; (2) `count_tokens` without session metadata created phantom sessions and is now stored with a NULL session.
+- **Interface changes:** `requests.session_id` is NULL for non-generation rows that have a derived session.
+- **Follow-ups:** none.
+- **Learnings:** Admin password is in `data/admin-password.txt`. `scripts/stop.sh` and `restart.sh` manage the instance.
