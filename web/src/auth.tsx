@@ -1,18 +1,15 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
-import { authApi } from './api'
-
-type AuthState = {
-  user: string | null
-  loading: boolean
-  login: (password: string) => Promise<void>
-  logout: () => Promise<void>
-}
-
-const AuthContext = createContext<AuthState | null>(null)
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { authApi, setUnauthorizedHandler } from './api'
+import { AuthContext } from './authContext'
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => setUser(null))
+    return () => setUnauthorizedHandler(null)
+  }, [])
 
   useEffect(() => {
     authApi
@@ -33,10 +30,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   return <AuthContext.Provider value={{ user, loading, login, logout }}>{children}</AuthContext.Provider>
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuth must be used inside AuthProvider')
-  return ctx
 }

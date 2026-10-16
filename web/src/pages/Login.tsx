@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { Navigate } from 'react-router-dom'
-import { useAuth } from '../auth'
+import { useAuth } from '../authContext'
 
 export default function Login() {
   const { user, login } = useAuth()

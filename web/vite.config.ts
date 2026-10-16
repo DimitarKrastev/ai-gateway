@@ -11,6 +11,8 @@ export default defineConfig({
     // The gateway serves the built UI from its wwwroot.
     outDir: '../src/Gateway/wwwroot',
     emptyOutDir: true,
+    // Recharts dominates the bundle; one ~700 kB chunk is fine for a self-hosted admin UI.
+    chunkSizeWarningLimit: 1000,
   },
   server: {
     port: webPort,
