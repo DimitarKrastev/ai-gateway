@@ -40,8 +40,12 @@ public sealed record BridgeValidationError(string ModelId, string Field, string 
 public sealed partial class BridgeModelCatalog(
     Database db, AccountStore accounts, TokenRefresher refresher, UpstreamRouter router, TimeProvider time, ILogger<BridgeModelCatalog> log)
 {
-    /// <summary>Codex CLI version sent to the Codex backend's model list (it filters models by client version).</summary>
-    public const string CodexClientVersion = "0.80.0";
+    /// <summary>
+    /// Codex CLI version sent to the Codex backend (model list and bridged requests). The backend filters models by client
+    /// version: an old version gets an empty list. Override with <c>GATEWAY_CODEX_CLIENT_VERSION</c> when Codex moves on.
+    /// </summary>
+    public static string CodexClientVersion { get; } =
+        Environment.GetEnvironmentVariable("GATEWAY_CODEX_CLIENT_VERSION") is { Length: > 0 } v ? v : "0.163.0";
     public const string LastRefreshSetting = "bridge.lastRefreshAt";
     public const int MaxNameLength = 200;
     public const int MaxDescriptionLength = 1000;

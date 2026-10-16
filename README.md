@@ -333,6 +333,7 @@ then defaults.
 | Data directory | `GATEWAY_DATA_DIR` | `./data` (scripts: `<repo>/data`) |
 | UI files | `GATEWAY_WEB_ROOT` | `wwwroot` next to `Gateway.dll` |
 | Admin password | `GATEWAY_ADMIN_PASSWORD` | generated into `<data dir>/admin-password.txt` |
+| Codex client version reported to the ChatGPT backend | `GATEWAY_CODEX_CLIENT_VERSION` | `0.163.0` (the backend hides models from older versions) |
 | Usage-endpoint polling (minutes, 0 = off) | `GATEWAY_LIMITS_REFRESH_MINUTES` | `5` |
 | Anthropic API base | `GATEWAY_UPSTREAM_ANTHROPIC_API` | `https://api.anthropic.com` |
 | Anthropic OAuth token host | `GATEWAY_UPSTREAM_ANTHROPIC_AUTH` | `https://console.anthropic.com` |
