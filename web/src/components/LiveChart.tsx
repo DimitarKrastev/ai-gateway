@@ -5,6 +5,8 @@ import { LIVE_WINDOWS, type LiveSeries } from '../liveWindows'
 
 /** Data for a second is complete just after it ends; drawing one second behind lets bars slide in from the right edge. */
 const DELAY_MS = 1000
+/** A per-request series (an agent) is drawn until this long after its last request, the gateway's "active" gap. */
+const IDLE_MS = 60_000
 
 function niceMax(v: number) {
   if (v <= 0) return 1
@@ -87,13 +89,20 @@ export default function LiveChart({
       for (const b of bands) {
         let up = ''
         let down = ''
+        // Outline only the seconds where this band has a value, so empty bands don't trace over the stack's top.
+        let line = ''
+        let drawing = false
         grid.forEach((t, i) => {
           up += `${i === 0 ? 'M' : 'L'}${f1(x(t))},${f1(y(b.hi[i]))}L${f1(x(t + bucketMs))},${f1(y(b.hi[i]))}`
+          if (b.hi[i] > b.lo[i]) {
+            line += `${drawing ? 'L' : 'M'}${f1(x(t))},${f1(y(b.hi[i]))}L${f1(x(t + bucketMs))},${f1(y(b.hi[i]))}`
+            drawing = true
+          } else drawing = false
         })
         for (let i = grid.length - 1; i >= 0; i--) {
           down += `L${f1(x(grid[i] + bucketMs))},${f1(y(b.lo[i]))}L${f1(x(grid[i]))},${f1(y(b.lo[i]))}`
         }
-        paths.push({ key: b.s.key, color: b.s.color, area: up + down + 'Z', line: up })
+        paths.push({ key: b.s.key, color: b.s.color, area: up + down + 'Z', line })
       }
       return { builtAt: now, k, top, paths }
     }
@@ -104,7 +113,7 @@ export default function LiveChart({
       let prevEnd: number | null = null
       s.points.forEach(([t, v], i) => {
         const next = s.points[i + 1]
-        const end = bucketMs !== null ? t + bucketMs : next ? next[0] : Math.max(t + 1000, now - DELAY_MS)
+        const end = bucketMs !== null ? t + bucketMs : next ? next[0] : Math.max(t + 1000, Math.min(now - DELAY_MS, t + IDLE_MS))
         if (end < from) return
         if (end >= viewStart) max = Math.max(max, v)
         const continuous = prevEnd !== null && Math.abs(prevEnd - t) < 1
