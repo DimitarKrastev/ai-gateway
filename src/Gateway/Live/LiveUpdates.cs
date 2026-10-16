@@ -47,6 +47,56 @@ public sealed class LiveNotifier
     }
 }
 
+/// <summary>One second of traffic: tokens generated (output) and sent (prompt, incl. cache) through the gateway.</summary>
+public sealed record MeterSample(long T, double Output, double Prompt);
+
+/// <summary>
+/// Per-second token throughput for the live throughput chart, kept in memory for the last <see cref="Seconds"/> seconds.
+/// Output is counted while it streams (an estimate from the streamed text, corrected to the reported total when the
+/// request completes); prompt tokens when the provider reports them.
+/// </summary>
+public sealed class LiveMeter(TimeProvider time)
+{
+    public const int Seconds = 600;
+    private readonly long[] _second = new long[Seconds];
+    private readonly double[] _output = new double[Seconds];
+    private readonly double[] _prompt = new double[Seconds];
+    private readonly Lock _gate = new();
+
+    public void AddOutput(double tokens) => Add(tokens, 0);
+    public void AddPrompt(double tokens) => Add(0, tokens);
+
+    private void Add(double output, double prompt)
+    {
+        if (output <= 0 && prompt <= 0) return;
+        var sec = time.GetUtcNow().ToUnixTimeSeconds();
+        var i = (int)(sec % Seconds);
+        lock (_gate)
+        {
+            if (_second[i] != sec) { _second[i] = sec; _output[i] = 0; _prompt[i] = 0; }
+            if (output > 0) _output[i] += output;
+            if (prompt > 0) _prompt[i] += prompt;
+        }
+    }
+
+    /// <summary>Completed seconds from <paramref name="fromSec"/> up to (not including) the current second; quiet seconds are 0.</summary>
+    public IReadOnlyList<MeterSample> Range(long fromSec)
+    {
+        var now = time.GetUtcNow().ToUnixTimeSeconds();
+        fromSec = Math.Max(fromSec, now - Seconds + 1);
+        var result = new List<MeterSample>((int)Math.Max(0, now - fromSec));
+        lock (_gate)
+        {
+            for (var sec = fromSec; sec < now; sec++)
+            {
+                var i = (int)(sec % Seconds);
+                result.Add(_second[i] == sec ? new MeterSample(sec * 1000, Math.Round(_output[i], 1), _prompt[i]) : new MeterSample(sec * 1000, 0, 0));
+            }
+        }
+        return result;
+    }
+}
+
 /// <summary>Admin UI clients connect here (cookie auth, under /api so the login requirement applies). Server push only.</summary>
 public sealed class LiveHub : Hub;
 
@@ -55,12 +105,41 @@ public sealed class LiveHub : Hub;
 /// "changed" notices for the other topics (the UI refetches what it shows; a burst of subagent traffic becomes one push).
 /// </summary>
 public sealed class LiveBroadcaster(
-    LiveNotifier notifier, IHubContext<LiveHub> hub, AnalyticsService analytics, TimeProvider time, ILogger<LiveBroadcaster> log)
+    LiveNotifier notifier, IHubContext<LiveHub> hub, AnalyticsService analytics, LiveMeter meter, LiveRequests live,
+    TimeProvider time, ILogger<LiveBroadcaster> log)
     : BackgroundService
 {
     public static readonly TimeSpan MinInterval = TimeSpan.FromMilliseconds(250);
 
+    /// <summary>Every second, just after the second ends: that second's throughput sample and the in-flight count.</summary>
+    private async Task TickMeterAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var now = time.GetUtcNow().ToUnixTimeMilliseconds();
+                await Task.Delay(TimeSpan.FromMilliseconds(1000 - now % 1000 + 20), time, ct);
+                var sec = time.GetUtcNow().ToUnixTimeSeconds() - 1;
+                if (meter.Range(sec) is [var sample, ..])
+                    await hub.Clients.All.SendAsync("meter", new { sample.T, sample.Output, sample.Prompt, inFlight = live.Count }, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+            catch (Exception e)
+            {
+                log.LogWarning(e, "Pushing the throughput meter failed");
+            }
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        var ticker = TickMeterAsync(ct);
+        await PushChangesAsync(ct);
+        await ticker;
+    }
+
+    private async Task PushChangesAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -95,9 +174,19 @@ public static class LiveExtensions
     {
         services.AddSignalR();
         services.AddSingleton<LiveNotifier>();
+        services.AddSingleton<LiveMeter>();
         services.AddHostedService<LiveBroadcaster>();
         return services;
     }
 
-    public static void MapLiveUpdates(this WebApplication app) => app.MapHub<LiveHub>(HubPath).RequireAuthorization();
+    public static void MapLiveUpdates(this WebApplication app)
+    {
+        app.MapHub<LiveHub>(HubPath).RequireAuthorization();
+        // History for the live throughput chart (the hub pushes one sample per second after that).
+        app.MapGet("/api/analytics/meter", (int? seconds, LiveMeter meter, LiveRequests live, TimeProvider time) =>
+        {
+            var span = Math.Clamp(seconds ?? 300, 1, LiveMeter.Seconds);
+            return Results.Ok(new { samples = meter.Range(time.GetUtcNow().ToUnixTimeSeconds() - span), inFlight = live.Count });
+        });
+    }
 }

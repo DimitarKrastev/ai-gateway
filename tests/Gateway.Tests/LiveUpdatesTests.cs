@@ -31,6 +31,61 @@ public class LiveUpdatesTests
     }
 
     [Fact]
+    public void Meter_reports_completed_seconds_with_quiet_seconds_as_zero()
+    {
+        var time = new MutableTime(DateTimeOffset.FromUnixTimeSeconds(1_000_000));
+        var meter = new LiveMeter(time);
+        meter.AddOutput(10);
+        meter.AddPrompt(500);
+        time.Now = time.Now.AddSeconds(2);
+        meter.AddOutput(7);
+        time.Now = time.Now.AddSeconds(1);
+
+        var samples = meter.Range(1_000_000);
+        Assert.Equal([1_000_000_000L, 1_000_001_000L, 1_000_002_000L], samples.Select(s => s.T));
+        Assert.Equal([10.0, 0, 7.0], samples.Select(s => s.Output));
+        Assert.Equal([500.0, 0, 0], samples.Select(s => s.Prompt));
+    }
+
+    private sealed class MutableTime(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    [Fact]
+    public async Task Meter_totals_match_the_recorded_usage_of_a_streamed_request()
+    {
+        await using var fake = await FakeProviderServer.StartInMemoryAsync(o => { o.AutoRegister = false; o.StreamChunkDelayMs = 100; });
+        var acct = fake.Anthropic.Register(new FakeAccountSpec(Kind: "api_key"));
+        using var gw = new ProxyGatewayFactory(fake);
+        var admin = await gw.CreateLoggedInClientAsync();
+        var key = await gw.CreateClientKeyAsync(admin);
+        await gw.LinkAsync(admin, new { apiKey = acct.ApiKey });
+
+        var body = new { model = "claude-sonnet-4-5-20250929", max_tokens = 64, stream = true, messages = new[] { new { role = "user", content = "hi" } } };
+        var res = await gw.CreateClient().SendAsync(Anthropic(key, body, bearer: true));
+        await res.Content.ReadAsStringAsync();
+
+        JsonElement record = default;
+        for (var i = 0; i < 50 && record.ValueKind == JsonValueKind.Undefined; i++)
+        {
+            var items = (await admin.GetFromJsonAsync<JsonElement>("/api/analytics/requests?limit=5")).GetProperty("items");
+            if (items.GetArrayLength() > 0) record = items[0];
+            else await Task.Delay(100);
+        }
+        // The request's last second completes within a second; wait for it, then compare the sums.
+        await Task.Delay(1200);
+        var samples = (await admin.GetFromJsonAsync<JsonElement>("/api/analytics/meter?seconds=60")).GetProperty("samples").EnumerateArray().ToList();
+        var output = samples.Sum(s => s.GetProperty("output").GetDouble());
+        var prompt = samples.Sum(s => s.GetProperty("prompt").GetDouble());
+        Assert.Equal(record.GetProperty("outputTokens").GetInt64(), output, 0.5);
+        Assert.Equal(record.GetProperty("inputTokens").GetInt64() + record.GetProperty("cacheReadTokens").GetInt64()
+            + record.GetProperty("cacheWriteTokens").GetInt64(), prompt, 0.5);
+        Assert.True(output > 0);
+    }
+
+    [Fact]
     public async Task Hub_requires_admin_login()
     {
         await using var fake = await FakeProviderServer.StartInMemoryAsync(o => o.AutoRegister = false);

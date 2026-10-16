@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { qs } from '../api'
 import { TimeChart } from '../components/charts'
+import LiveThroughput from '../components/LiveThroughput'
 import { metricDef, metricLabels } from '../metrics'
 import { PageHead, RangePicker } from '../components/Layout'
 import { AccountStatus, Async, Badge, Empty, Kpi, LimitBar, Panel } from '../components/ui'
@@ -33,6 +34,8 @@ export default function Overview() {
       <PageHead title="Overview">
         <RangePicker />
       </PageHead>
+
+      <LiveThroughput />
 
       <Async state={summary}>
         {(s) => (

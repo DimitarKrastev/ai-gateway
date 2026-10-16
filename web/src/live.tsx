@@ -1,9 +1,19 @@
 import { HubConnectionBuilder, HubConnectionState, LogLevel } from '@microsoft/signalr'
 import { useEffect, useState, type ReactNode } from 'react'
-import { LiveContext, type LiveCtx, type LiveTopic } from './liveContext'
+import { api } from './api'
+import { LiveContext, MeterContext, type LiveCtx, type LiveTopic, type MeterCtx, type MeterSample } from './liveContext'
 import type { Live } from './types'
 
 const TOPICS: LiveTopic[] = ['usage', 'limits', 'accounts', 'routing']
+const METER_SECONDS = 600
+
+/** Merges samples by second, keeping the newest value per second and the last ten minutes. */
+function mergeMeter(current: MeterSample[], incoming: MeterSample[]): MeterSample[] {
+  const bySecond = new Map(current.map((s) => [s.t, s]))
+  for (const s of incoming) bySecond.set(s.t, s)
+  const newest = Math.max(0, ...bySecond.keys())
+  return [...bySecond.values()].filter((s) => s.t > newest - METER_SECONDS * 1000).sort((a, b) => a.t - b.t)
+}
 
 /**
  * One SignalR connection per signed-in tab (`/api/live`, cookie auth). The gateway pushes the in-flight snapshot and
@@ -15,6 +25,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     versions: { usage: 0, limits: 0, accounts: 0, routing: 0 },
     inFlight: undefined,
   })
+  const [meter, setMeter] = useState<MeterCtx>({ samples: [], inFlight: 0, skew: 0 })
 
   useEffect(() => {
     const connection = new HubConnectionBuilder()
@@ -29,6 +40,19 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       setState((s) => ({ ...s, versions: Object.fromEntries(TOPICS.map((t) => [t, s.versions[t] + 1])) as LiveCtx['versions'] }))
 
     connection.on('inFlight', (data: Live) => setState((s) => ({ ...s, inFlight: { data, receivedAt: Date.now() } })))
+    // A second's sample is pushed just after the second ends, so its arrival dates the gateway clock.
+    let skew: number | null = null
+    connection.on('meter', (m: MeterSample & { inFlight: number }) => {
+      const observed = Date.now() - (m.t + 1000)
+      skew = skew === null ? observed : skew * 0.8 + observed * 0.2
+      const sk = skew
+      setMeter((s) => ({ samples: mergeMeter(s.samples, [{ t: m.t, output: m.output, prompt: m.prompt }]), inFlight: m.inFlight, skew: sk }))
+    })
+    // History so the chart is full right away (and after a reconnect, the gap is filled).
+    const loadMeter = () =>
+      api<{ samples: MeterSample[]; inFlight: number }>(`/api/analytics/meter?seconds=${METER_SECONDS}`)
+        .then((r) => setMeter((s) => ({ ...s, samples: mergeMeter(s.samples, r.samples), inFlight: r.inFlight })))
+        .catch(() => {})
     connection.on('changed', (msg: { topics: string[] }) =>
       setState((s) => {
         const versions = { ...s.versions }
@@ -41,6 +65,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     connection.onreconnected(() => {
       setStatus('live')
       bumpAll()
+      loadMeter()
     })
     connection.onclose(() => setStatus('offline'))
 
@@ -49,7 +74,11 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     const start = () => {
       connection
         .start()
-        .then(() => !stopped && setStatus('live'))
+        .then(() => {
+          if (stopped) return
+          setStatus('live')
+          loadMeter()
+        })
         .catch(() => {
           if (stopped) return
           setStatus('offline')
@@ -64,5 +93,9 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  return <LiveContext.Provider value={state}>{children}</LiveContext.Provider>
+  return (
+    <LiveContext.Provider value={state}>
+      <MeterContext.Provider value={meter}>{children}</MeterContext.Provider>
+    </LiveContext.Provider>
+  )
 }

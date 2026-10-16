@@ -71,12 +71,13 @@ public sealed class LiveRequests(LiveNotifier notifier)
     public void Add(LiveRequest r) { _items[r.Key] = r; notifier.Notify(LiveTopic.InFlight); }
     public void Remove(string key) { if (_items.TryRemove(key, out _)) notifier.Notify(LiveTopic.InFlight); }
     public IReadOnlyList<LiveRequest> Snapshot() => _items.Values.OrderBy(r => r.StartedAt).ToList();
+    public int Count => _items.Count;
 }
 
 /// <summary>Captures usage of every proxied attempt and records it; see <see cref="ResponseUsageParser"/>.</summary>
 public sealed class UsageObserver(
-    UsageStore store, AgentIdentifier agents, PricingTable pricing, LiveRequests live, LiveNotifier notifier, TimeProvider time,
-    ILogger<UsageObserver> log)
+    UsageStore store, AgentIdentifier agents, PricingTable pricing, LiveRequests live, LiveNotifier notifier, LiveMeter meter,
+    TimeProvider time, ILogger<UsageObserver> log)
     : IRequestObserver
 {
     private const string StateKey = "usage.state";
@@ -89,6 +90,9 @@ public sealed class UsageObserver(
         public long? FirstByteAt;
         public long? FirstTokenAt;
         public string LiveKey = "";
+        // Tokens already counted on the live throughput meter.
+        public double MeteredOutput;
+        public double MeteredPrompt;
     }
 
     public void OnRequestStarted(ProxiedRequestContext ctx)
@@ -113,6 +117,7 @@ public sealed class UsageObserver(
         s.FirstByteAt ??= now;
         s.Parser?.Feed(chunk);
         if (s.FirstTokenAt == null && s.Parser is { OutputStarted: true }) s.FirstTokenAt = now;
+        if (s.Parser is { } p) Meter(s, p.StreamedChars / 4.0, p.Usage.ContextTokens);
     }
 
     public Task OnCompletedAsync(ProxiedRequestContext ctx)
@@ -123,6 +128,8 @@ public sealed class UsageObserver(
         {
             var info = s?.Info ?? RequestInfo.Parse(ctx);
             var usage = s?.Parser?.Complete() ?? new ResponseUsage();
+            // Settle the live meter on the reported totals (the streamed estimate never takes tokens back).
+            if (s != null) Meter(s, usage.OutputTokens, usage.ContextTokens);
             var model = usage.Model ?? info.Model;
             var price = usage.HasUsage ? pricing.Find(model) : null;
             var agent = s != null ? s.Agent : agents.Identify(ctx, info);
@@ -162,6 +169,12 @@ public sealed class UsageObserver(
             log.LogError(e, "Failed to record usage for request {RequestId}", ctx.RequestId);
         }
         return Task.CompletedTask;
+    }
+
+    private void Meter(State s, double output, double prompt)
+    {
+        if (output > s.MeteredOutput) { meter.AddOutput(output - s.MeteredOutput); s.MeteredOutput = output; }
+        if (prompt > s.MeteredPrompt) { meter.AddPrompt(prompt - s.MeteredPrompt); s.MeteredPrompt = prompt; }
     }
 
     /// <summary>Speed values come from client/provider payloads; keep them short.</summary>

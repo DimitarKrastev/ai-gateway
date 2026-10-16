@@ -31,6 +31,21 @@ public class UsageParserTests
     }
 
     [Fact]
+    public void Counts_streamed_output_characters_for_the_live_meter()
+    {
+        var anthropic = new ResponseUsageParser(Endpoints.Messages, 200, "text/event-stream");
+        anthropic.Feed(Encoding.UTF8.GetBytes(
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n" +
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\":1}\"}}\n\n"));
+        Assert.Equal(5 + 9, anthropic.StreamedChars);
+
+        var openai = new ResponseUsageParser(Endpoints.Responses, 200, "");
+        openai.Feed(Encoding.UTF8.GetBytes(
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"delta\":\"abc\",\"obfuscation\":\"xxxxxxxxxx\"}\n\n"));
+        Assert.Equal(3, openai.StreamedChars);
+    }
+
+    [Fact]
     public void Json_body_without_content_type_is_detected_from_the_body()
     {
         var u = Parse(Endpoints.Responses, "", """

@@ -50,6 +50,14 @@ public sealed class ResponseUsageParser
     /// <summary>True once the stream has carried its first output (token delta) event.</summary>
     public bool OutputStarted { get; private set; }
 
+    /// <summary>
+    /// Characters of output streamed so far (text, thinking and tool-argument deltas), for a live estimate of output
+    /// tokens before the final usage arrives. Hidden reasoning is not streamed and only shows up in the final usage.
+    /// </summary>
+    public long StreamedChars { get; private set; }
+
+    private bool _deltaEvent;
+
     public ResponseUsageParser(string endpoint, int status, string? contentType)
     {
         _endpoint = endpoint;
@@ -164,7 +172,13 @@ public sealed class ResponseUsageParser
                 var name = Encoding.UTF8.GetString(line[6..]).Trim();
                 // Token deltas are the bulk of a stream and never carry usage.
                 _skipEvent = name.EndsWith(".delta") || name is "content_block_delta" or "ping";
-                if (_skipEvent && name != "ping") OutputStarted = true;
+                _deltaEvent = _skipEvent && name != "ping";
+                if (_deltaEvent) OutputStarted = true;
+                return;
+            }
+            if (_deltaEvent && line.StartsWith("data:"u8))
+            {
+                StreamedChars += DeltaChars(line[5..]);
                 return;
             }
             if (line.StartsWith("data:"u8) && !_skipEvent)
@@ -183,6 +197,7 @@ public sealed class ResponseUsageParser
     {
         var skip = _skipEvent;
         _skipEvent = false;
+        _deltaEvent = false;
         if (skip || _data.Length == 0) { _data.SetLength(0); return; }
         var data = _data.GetBuffer().AsMemory(0, (int)_data.Length);
         try
@@ -193,6 +208,31 @@ public sealed class ResponseUsageParser
         }
         catch (JsonException) { }
         finally { _data.SetLength(0); }
+    }
+
+    private static readonly byte[][] DeltaTextFields =
+        ["text"u8.ToArray(), "delta"u8.ToArray(), "thinking"u8.ToArray(), "partial_json"u8.ToArray(), "arguments"u8.ToArray()];
+
+    /// <summary>Length of the streamed text in a delta event (Anthropic <c>delta.text</c>/<c>thinking</c>/<c>partial_json</c>,
+    /// OpenAI <c>delta</c>), read with a forward-only reader; the event is not otherwise parsed.</summary>
+    private static int DeltaChars(ReadOnlySpan<byte> data)
+    {
+        var total = 0;
+        try
+        {
+            var reader = new Utf8JsonReader(data.TrimStart(" "u8));
+            while (reader.Read())
+            {
+                if (reader.TokenType != JsonTokenType.PropertyName) continue;
+                var isText = false;
+                foreach (var f in DeltaTextFields)
+                    if (reader.ValueTextEquals(f)) { isText = true; break; }
+                if (!reader.Read()) break;
+                if (isText && reader.TokenType == JsonTokenType.String) total += reader.ValueSpan.Length;
+            }
+        }
+        catch (JsonException) { }
+        return total;
     }
 
     private void HandleStreamEvent(JsonElement e)

@@ -14,6 +14,10 @@
   --warn-soft: #fff1db;
   --danger: #c92a2a;
   --danger-soft: #ffe8e8;
+  --tp-out: #8b5cf6;
+  --tp-out-fill: rgba(139, 92, 246, 0.14);
+  --tp-prompt: #0ea5e9;
+  --tp-prompt-fill: rgba(14, 165, 233, 0.12);
   --radius: 8px;
   color-scheme: light dark;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -41,6 +45,10 @@
     --warn-soft: #3a2a12;
     --danger: #ff6b6b;
     --danger-soft: #3d1a1a;
+    --tp-out: #a78bfa;
+    --tp-out-fill: rgba(167, 139, 250, 0.18);
+    --tp-prompt: #38bdf8;
+    --tp-prompt-fill: rgba(56, 189, 248, 0.14);
   }
 }
 
@@ -283,3 +291,26 @@ button.icon { background: none; color: var(--muted); font-size: 1.3rem; line-hei
   .live-status.live .live-dot { animation: live-pulse 2s ease-in-out infinite; }
 }
 @keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* Live throughput (Overview): scrolling one-second step chart */
+.throughput { margin-bottom: 14px; }
+.tp-head { gap: 16px; }
+.tp-head h3 { margin: 0; }
+.tp-values { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+.tp-value { font-size: 1.25rem; font-weight: 600; min-width: 7.5ch; }
+.tp-value small { font-size: 0.75rem; font-weight: 500; opacity: 0.8; }
+.tp-value.out { color: var(--tp-out); }
+.tp-value.prompt { color: var(--tp-prompt); }
+.tp-inflight { font-size: 0.85rem; }
+.tp-chart { width: 100%; min-width: 0; }
+.tp-strip { display: block; overflow: hidden; }
+.tp-label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin: 4px 0 2px; }
+.tp-grid { stroke: var(--grid); stroke-width: 1; }
+.tp-axis { stroke: var(--border); stroke-width: 1; }
+.tp-max { font-size: 10px; fill: var(--muted); }
+.tp-line { fill: none; stroke-width: 1.5; stroke-linejoin: round; }
+.tp-strip.out .tp-area { fill: var(--tp-out-fill); }
+.tp-strip.out .tp-line { stroke: var(--tp-out); }
+.tp-strip.prompt .tp-area { fill: var(--tp-prompt-fill); }
+.tp-strip.prompt .tp-line { stroke: var(--tp-prompt); }
+.tp-axis-labels { display: flex; justify-content: space-between; font-size: 0.72rem; margin-top: 2px; }

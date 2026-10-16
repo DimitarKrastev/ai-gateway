@@ -298,6 +298,10 @@ Notes:
   in-flight snapshot as requests start and finish, and a "changed" notice (usage, limits, accounts, routing) at most every
   250 ms; pages refetch what they show, and a range that ends *now* slides forward with each new request (at most once a
   second). The top bar shows **Live** while connected; without the connection pages fall back to periodic refresh.
+  The Overview's **Live throughput** panel is a scrolling one-second chart of tokens generated (↓) and prompt tokens
+  sent (↑) across all accounts, over the last 1, 5 or 10 minutes, plus requests in flight. Output is counted while it
+  streams (streamed text ÷ 4, settled to the reported total when the request completes; hidden reasoning appears at
+  completion); prompt tokens when the provider reports them. It is kept in memory only (`GET /api/analytics/meter`).
   For second-level detail pick the **5m** or **15m** range (auto bucket 5 s; **1h** gets 15 s) or a 5s/15s/30s bucket on
   the Analytics page.
 
