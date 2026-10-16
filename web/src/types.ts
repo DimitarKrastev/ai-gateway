@@ -310,3 +310,22 @@ export type BridgeCatalog = {
 }
 
 export type BridgeValidationError = { modelId: string; field: string; message: string }
+
+/** Provider speed table row (/api/analytics/speed): one provider · model · speed mode. */
+export type SpeedRow = {
+  key: string
+  label: string
+  provider: string
+  model: string
+  mode: string
+  requests: number
+  outputTokens: number
+  /** Output tokens per second, request sent → response received (output-token-weighted). */
+  endToEnd: number | null
+  endToEndP50: number | null
+  endToEndP95: number | null
+  /** Output tokens per second of generation only (first token → end). */
+  generation: number | null
+  avgTtftMs: number | null
+  avgDurationMs: number
+}

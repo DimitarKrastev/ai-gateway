@@ -36,6 +36,23 @@ public static class Throughput
         $"(SUM(CASE WHEN {EligibleSql(p)} THEN {p}output_tokens * ({p}output_tokens * 1000.0 / {p}generation_ms) END)"
         + $" / SUM(CASE WHEN {EligibleSql(p)} THEN {p}output_tokens END))";
 
+    // End to end: from the moment the gateway sends the request upstream to the moment the last byte of the response has
+    // arrived. This is the provider's speed as a client experiences it: queueing, prompt processing (time to first token)
+    // and generation, for streaming and non-streaming requests alike.
+
+    /// <summary>Rows with an end-to-end speed: successful, not cancelled, with output.</summary>
+    public static string EndToEndEligibleSql(string p = "") =>
+        $"({p}completed_at > {p}started_at AND {p}output_tokens > 0 AND {p}status < 400 AND {p}cancelled = 0 AND {p}error_type IS NULL)";
+
+    /// <summary>Per-request output tokens per second, request sent to response received; NULL when not eligible.</summary>
+    public static string EndToEndPerRequestSql(string p = "") =>
+        $"(CASE WHEN {EndToEndEligibleSql(p)} THEN {p}output_tokens * 1000.0 / ({p}completed_at - {p}started_at) END)";
+
+    /// <summary>Total output tokens over total elapsed time (= the output-token-weighted mean of per-request speeds).</summary>
+    public static string EndToEndWeightedAvgSql(string p = "") =>
+        $"(SUM(CASE WHEN {EndToEndEligibleSql(p)} THEN {p}output_tokens END) * 1000.0"
+        + $" / SUM(CASE WHEN {EndToEndEligibleSql(p)} THEN {p}completed_at - {p}started_at END))";
+
     /// <summary>Linear-interpolated percentile (0..1) of an unsorted list; null when empty.</summary>
     public static double? Percentile(List<double> values, double q)
     {

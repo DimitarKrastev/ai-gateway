@@ -336,3 +336,4 @@ button.icon { background: none; color: var(--muted); font-size: 1.3rem; line-hei
 .live-readout .swatch { width: 10px; height: 10px; border-radius: 2px; }
 .live-readout .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .live-readout .value { font-variant-numeric: tabular-nums; }
+.num.strong { font-weight: 600; }

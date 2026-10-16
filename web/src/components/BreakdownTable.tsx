@@ -1,7 +1,7 @@
 import type { BreakdownRow } from '../types'
 import { fmtCompact, fmtDateTime, fmtInt, fmtMs, fmtTps, fmtUsd } from '../format'
 
-const HEADINGS: Record<string, string> = { agentId: 'Agent', agent: 'Agent type', requestedModel: 'Requested model', speedMode: 'Speed mode', modelMode: 'Model · mode' }
+const HEADINGS: Record<string, string> = { agentId: 'Agent', agent: 'Agent type', requestedModel: 'Requested model', speedMode: 'Speed mode', modelMode: 'Model · mode', providerModelMode: 'Provider · model · mode' }
 
 export default function BreakdownTable({
   by,

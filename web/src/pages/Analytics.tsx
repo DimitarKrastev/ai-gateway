@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { qs } from '../api'
 import BreakdownTable from '../components/BreakdownTable'
+import SpeedTable from '../components/SpeedTable'
 import { AgentChart, ModeComparisonChart, TimeChart, type TpsStat } from '../components/charts'
 import { PageHead, RangePicker } from '../components/Layout'
 import LiveChart from '../components/LiveChart'
@@ -11,7 +12,7 @@ import type { LiveTopic } from '../liveContext'
 import { LIVE_WINDOWS, type LiveSeries, type LiveWindowKey } from '../liveWindows'
 import { metricDef, METRICS, PALETTE } from '../metrics'
 import { useRange } from '../rangeContext'
-import type { Account, AgentSeriesResult, BreakdownRow, Summary, Timeseries } from '../types'
+import type { Account, AgentSeriesResult, BreakdownRow, SpeedRow, Summary, Timeseries } from '../types'
 
 const GROUPS = [
   { key: 'none', label: 'None' },
@@ -23,10 +24,11 @@ const GROUPS = [
   { key: 'requestedModel', label: 'Requested model' },
   { key: 'speedMode', label: 'Speed mode' },
   { key: 'modelMode', label: 'Model + mode' },
+  { key: 'providerModelMode', label: 'Provider + model + mode' },
   { key: 'provider', label: 'Provider' },
   { key: 'client', label: 'Client' },
 ]
-const BREAKDOWNS = ['account', 'session', 'agent', 'agentId', 'model', 'requestedModel', 'speedMode', 'modelMode', 'provider', 'client', 'tool']
+const BREAKDOWNS = ['speed', 'account', 'session', 'agent', 'agentId', 'model', 'requestedModel', 'speedMode', 'modelMode', 'provider', 'client', 'tool']
 const BUCKETS = ['auto', '5s', '15s', '30s', 'minute', '5min', '15min', 'hour', '6hour', 'day']
 const TPS_STATS: Array<{ key: TpsStat; label: string }> = [
   { key: 'tokensPerSecond', label: 'Weighted avg' },
@@ -47,7 +49,7 @@ type Filters = {
 const NO_FILTERS: Filters = { provider: '', accountId: '', model: '', requestedModel: '', speedMode: '', agent: '', sessionId: '', agentId: '' }
 
 const breakdownLabel = (b: string) =>
-  b === 'agentId' ? 'Agent' : (GROUPS.find((g) => g.key === b)?.label ?? (b === 'tool' ? 'Tool' : b))
+  b === 'agentId' ? 'Agent' : b === 'speed' ? 'Speed' : (GROUPS.find((g) => g.key === b)?.label ?? (b === 'tool' ? 'Tool' : b))
 
 type LiveState = { on: boolean; window: LiveWindowKey }
 const LIVE_KEY = 'aigw.analyticsLive'
@@ -129,7 +131,8 @@ export default function Analytics() {
     undefined,
     lt,
   )
-  const breakdown = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ ...base, by, limit: 100 })}`, undefined, lt)
+  const breakdown = useApi<{ rows: BreakdownRow[] }>(by === 'speed' ? null : `/api/analytics/breakdown${qs({ ...base, by, limit: 100 })}`, undefined, lt)
+  const speed = useApi<{ rows: SpeedRow[] }>(by === 'speed' ? `/api/analytics/speed${qs({ ...base, limit: 100 })}` : null, undefined, lt)
   const tpsOverTime = useApi<Timeseries>(
     `/api/analytics/timeseries${qs({ ...base, metric: tpsStat, groupBy: 'modelMode', bucket: bucketQ, limit: 8 })}`,
     undefined,
@@ -409,9 +412,27 @@ export default function Analytics() {
           </div>
         }
       >
-        <Async state={breakdown} empty={(d) => (d.rows.length === 0 ? <Empty>No requests match.</Empty> : null)}>
-          {(d) => <BreakdownTable by={by} rows={d.rows} onPick={by === 'tool' || by === 'client' ? undefined : pick} />}
-        </Async>
+        {by === 'speed' ? (
+          <>
+            <p className="muted small chart-note">
+              One row per provider, model and speed mode. Tokens per second end to end: output tokens ÷ the time from the gateway
+              sending the request to receiving the whole response, so it includes the wait for the first token. Successful
+              requests with output only; the average is weighted by output tokens.
+            </p>
+            <Async state={speed} empty={(d) => (d.rows.length === 0 ? <Empty>No measured requests in this range.</Empty> : null)}>
+              {(d) => (
+                <SpeedTable
+                  rows={d.rows}
+                  onPick={(row) => setF((p) => ({ ...p, provider: row.provider, model: row.model, speedMode: row.mode }))}
+                />
+              )}
+            </Async>
+          </>
+        ) : (
+          <Async state={breakdown} empty={(d) => (d.rows.length === 0 ? <Empty>No requests match.</Empty> : null)}>
+            {(d) => <BreakdownTable by={by} rows={d.rows} onPick={by === 'tool' || by === 'client' ? undefined : pick} />}
+          </Async>
+        )}
       </Panel>
     </>
   )

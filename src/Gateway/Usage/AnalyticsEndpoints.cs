@@ -63,6 +63,13 @@ public static class AnalyticsEndpoints
                 : Results.BadRequest(new { error = "Unknown breakdown.", by = AnalyticsService.GroupNames.Skip(1).Append("tool") });
         });
 
+        // Provider speed: one row per provider · model · speed mode, measured end to end (request sent → response received).
+        g.MapGet("/speed", (HttpRequest req, AnalyticsService a, TimeProvider t) =>
+        {
+            var limit = int.TryParse(req.Query["limit"], out var l) ? Math.Clamp(l, 1, 500) : 100;
+            return Results.Ok(new { rows = a.Speed(AnalyticsFilter.FromQuery(req.Query, t.GetUtcNow()), limit) });
+        });
+
         g.MapGet("/sessions", (HttpRequest req, AnalyticsService a, TimeProvider t) =>
         {
             var limit = int.TryParse(req.Query["limit"], out var l) ? Math.Clamp(l, 1, 500) : 50;

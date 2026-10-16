@@ -37,6 +37,10 @@ export const METRICS: MetricDef[] = [
   { key: 'tokensPerSecond', label: 'Output tokens/s (weighted avg)', kind: 'avg', format: fmtTps, perRequest: true },
   { key: 'tokensPerSecondP50', label: 'Output tokens/s (p50)', kind: 'avg', format: fmtTps, perRequest: true },
   { key: 'tokensPerSecondP95', label: 'Output tokens/s (p95)', kind: 'avg', format: fmtTps, perRequest: true },
+  // End to end: request sent → response received (includes time to first token).
+  { key: 'e2eTokensPerSecond', label: 'End-to-end tokens/s (weighted avg)', kind: 'avg', format: fmtTps, perRequest: true },
+  { key: 'e2eTokensPerSecondP50', label: 'End-to-end tokens/s (p50)', kind: 'avg', format: fmtTps, perRequest: true },
+  { key: 'e2eTokensPerSecondP95', label: 'End-to-end tokens/s (p95)', kind: 'avg', format: fmtTps, perRequest: true },
   { key: 'concurrentAgents', label: 'Concurrent agents (peak)', kind: 'peak', format: count },
   { key: 'concurrentRequests', label: 'Concurrent requests (peak)', kind: 'peak', format: count },
   { key: 'activeAgents', label: 'Active agents', kind: 'peak', format: count },

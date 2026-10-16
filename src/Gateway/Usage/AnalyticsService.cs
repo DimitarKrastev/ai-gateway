@@ -124,6 +124,9 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         // Percentile metrics: the SQL is the per-request value; percentiles are computed in memory.
         ["tokensPerSecondP50"] = (Throughput.PerRequestSql(), Agg.Percentile),
         ["tokensPerSecondP95"] = (Throughput.PerRequestSql(), Agg.Percentile),
+        ["e2eTokensPerSecond"] = (Throughput.EndToEndWeightedAvgSql(), Agg.Avg),
+        ["e2eTokensPerSecondP50"] = (Throughput.EndToEndPerRequestSql(), Agg.Percentile),
+        ["e2eTokensPerSecondP95"] = (Throughput.EndToEndPerRequestSql(), Agg.Percentile),
         ["activeAgents"] = ("COUNT(DISTINCT agent_id)", Agg.Distinct),
         ["activeSessions"] = ("COUNT(DISTINCT session_id)", Agg.Distinct),
         ["concurrentRequests"] = ("", Agg.Concurrency),
@@ -133,7 +136,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
 
     public static IReadOnlyCollection<string> MetricNames => MetricSql.Keys;
     public static readonly string[] GroupNames =
-        ["none", "provider", "account", "session", "agent", "agentId", "model", "requestedModel", "speedMode", "modelMode", "client", "endpoint"];
+        ["none", "provider", "account", "session", "agent", "agentId", "model", "requestedModel", "speedMode", "modelMode", "providerModelMode", "client", "endpoint"];
 
     /// <summary>The model the client asked for: the advertised id of bridged requests, else the recorded model.</summary>
     public static string RequestedModelSql(string p = "") => $"COALESCE({p}requested_model, {p}model, 'unknown')";
@@ -155,6 +158,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         "latencyAvg" => "completed_at - started_at",
         "ttfbAvg" => "first_byte_at - started_at",
         "tokensPerSecond" or "tokensPerSecondP50" or "tokensPerSecondP95" => Throughput.PerRequestSql(),
+        "e2eTokensPerSecond" or "e2eTokensPerSecondP50" or "e2eTokensPerSecondP95" => Throughput.EndToEndPerRequestSql(),
         _ => null,
     };
 
@@ -180,6 +184,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         "requestedModel" => RequestedModelSql(p),
         "speedMode" => SpeedModes.Sql(p),
         "modelMode" => $"(COALESCE({p}model, 'unknown') || '|' || {SpeedModes.Sql(p)})",
+        "providerModelMode" => $"({p}provider || '|' || COALESCE({p}model, 'unknown') || '|' || {SpeedModes.Sql(p)})",
         "client" => $"{p}client",
         "endpoint" => $"{p}endpoint",
         _ => null,
@@ -605,6 +610,57 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         return rows;
     }
 
+    /// <summary>One row of the provider speed table: one provider · model · speed mode combination.</summary>
+    public sealed record SpeedRow(
+        string Key, string Label, string Provider, string Model, string Mode, long Requests, long OutputTokens,
+        double? EndToEnd, double? EndToEndP50, double? EndToEndP95, double? Generation, double? AvgTtftMs, double AvgDurationMs);
+
+    /// <summary>
+    /// Output speed per provider · model · speed mode, measured end to end (request sent → response received) over the
+    /// eligible requests, with generation-only speed and time to first token for comparison.
+    /// </summary>
+    public List<SpeedRow> Speed(AnalyticsFilter f, int limit)
+    {
+        var groupSql = GroupSql("providerModelMode")!;
+        var rows = new List<SpeedRow>();
+        var e2e = Throughput.EndToEndEligibleSql();
+        using (var conn = db.Open())
+        using (var cmd = conn.CreateCommand())
+        {
+            var where = f.Where(cmd);
+            cmd.CommandText = $"""
+                SELECT {groupSql} AS g, provider, COALESCE(model, 'unknown'), {SpeedModes.Sql()},
+                       COUNT(*), SUM(output_tokens), {Throughput.EndToEndWeightedAvgSql()}, {Throughput.WeightedAvgSql()},
+                       AVG(COALESCE(first_token_at, first_byte_at) - started_at), AVG(completed_at - started_at)
+                FROM requests WHERE {where} AND {e2e}
+                GROUP BY g ORDER BY SUM(output_tokens) DESC LIMIT $limit;
+                """;
+            cmd.Parameters.AddWithValue("$limit", limit);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+                rows.Add(new SpeedRow(r.GetString(0), r.GetString(0).Replace("|", " · "), r.GetString(1), r.GetString(2), r.GetString(3),
+                    r.GetInt64(4), r.GetInt64(5), r.IsDBNull(6) ? null : Math.Round(r.GetDouble(6), 1), null, null,
+                    r.IsDBNull(7) ? null : Math.Round(r.GetDouble(7), 1), r.IsDBNull(8) ? null : Math.Round(r.GetDouble(8)),
+                    Math.Round(r.GetDouble(9))));
+        }
+        var values = new Dictionary<string, List<double>>();
+        using (var conn = db.Open())
+        using (var cmd = conn.CreateCommand())
+        {
+            var where = f.Where(cmd);
+            cmd.CommandText = $"SELECT {groupSql}, {Throughput.EndToEndPerRequestSql()} FROM requests WHERE {where} AND {e2e};";
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                if (!values.TryGetValue(r.GetString(0), out var list)) values[r.GetString(0)] = list = new();
+                list.Add(r.GetDouble(1));
+            }
+        }
+        return rows.Select(row => values.TryGetValue(row.Key, out var list)
+            ? row with { EndToEndP50 = Math.Round(Throughput.Percentile(list, 0.5)!.Value, 1), EndToEndP95 = Math.Round(Throughput.Percentile(list, 0.95)!.Value, 1) }
+            : row).ToList();
+    }
+
     private List<BreakdownRow> WithThroughputPercentiles(AnalyticsFilter f, string groupSql, List<BreakdownRow> rows)
     {
         var values = new Dictionary<string, List<double>>();
@@ -889,7 +945,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
                 while (r.Read()) roles[r.GetString(0)] = r.IsDBNull(1) ? null : r.GetString(1);
                 return k => AgentLabel(k, roles.GetValueOrDefault(k));
             }
-            case "modelMode":
+            case "modelMode" or "providerModelMode":
                 return k => k.Replace("|", " · ");
             default:
                 return k => k;
