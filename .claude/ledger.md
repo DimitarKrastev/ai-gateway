@@ -71,3 +71,34 @@
 - **Interface changes:** migration v5 (5 nullable `requests` columns); metrics `tokensPerSecond[P50|P95]`; groups/filter `speedMode`, `modelMode`; `/api/analytics/agent-series`; new breakdown/summary/request fields; agent labels `session8 · role · instance`. Shapes: `.claude/ledger/analytics.md`.
 - **Follow-ups:** Codex subagent threads with their own `session_id` header still form their own sessions (session identification unchanged).
 - **Learnings:** Fakes: `[[tps:N]]`, `[[ttft:MS]]`, `[[tool:NAME*N]]`, `Fakes__TokensPerSecond`; e2e sets 1500 tok/s.
+
+## Item 11 — Bridge: catalog, selection, models endpoint, UI
+- **Status:** done
+- **Evidence:** full `dotnet build` 0 errors; `npm run lint` exit 0; `dotnet test` 113/113 (27 new `BridgeCatalogTests`); browser pass 1440 px light + 390 px dark on 6340/6341 (stopped). Commit d64ea9e on `bridge/catalog`.
+- **Decisions:** advertised-id overrides stored only when differing from default; only exposed models validated; `/anthropic/v1/models` runs the existing proxy with captured body (routed, authenticated, recorded), exposed models first; API lists drop non-chat models and dated snapshots; hidden Codex models skipped.
+- **Interface changes:** migration 6 (`bridge_models`, `bridge_model_accounts`); `BridgeModelCatalog.ResolveExposed(string?)`, `ListExposed()` → `BridgeModel(AdvertisedId, UpstreamModel, DisplayName, Description, AccountIds, SupportedEfforts, DefaultEffort, CreatedAt)`; public `ProxyHandler.InjectCredentials(req, kind, creds, anthropicBeta?)`, `ProxyHandler.PresentedKey`, `TokenRefresher.SendAuthenticatedAsync(account, build, ct)`; `/api/bridge/*` (shapes in `.claude/ledger/bridge-catalog.md`).
+- **Follow-ups:** item 12 must intersect `AccountIds` with eligible accounts (empty = any OpenAI account) and merge the ProxyHandler refactor.
+- **Learnings:** `GatewayFactory` has init `DataDir` + `KeepDataDir` for restart tests; fake Codex models endpoint requires `client_version`.
+
+## Item 10 — Bridge: translator
+- **Status:** done
+- **Evidence:** `dotnet build -p:SkipWebBuild=true` 0 warnings; `dotnet test` 144/144 (58 new: `BridgeTranslationTests`, `BridgeTranslationStreamTests`). Commit 42db28e on `bridge/translator`. Files: `src/Gateway/Bridge/{AnthropicToResponses,ResponsesToAnthropic,AnthropicStreamTranslator,AnthropicErrors,BridgeTokenEstimator,BridgeTranslateOptions}.cs`.
+- **Decisions:** billing-header system block dropped (stable cache prefix); reasoning items replayed without `id` (store:false); invalid OpenAI tool names → deterministic hashed short names, mapped back via `ToolNameMap`; one block open at a time; thinking blocks open lazily; bad tool JSON → `{"_raw_arguments":…}`; upstream error messages prefixed "OpenAI upstream error (status):"; usage is `long`.
+- **Interface changes:** `AnthropicToResponses.Translate(JsonNode, BridgeTranslateOptions) → BridgeRequest(Body, ClientStream, ToolNameMap, DroppedTools)` + `.UpstreamStream`; throws `BridgeTranslationException` (→ 400). `ResponsesToAnthropic.FromResponseJson(node, advertisedId, toolNameMap?)`. `AnthropicStreamTranslator(advertisedId, toolNameMap?)`: `Feed(span)`/`Complete()` → bytes; props `ResponseId, UpstreamModel, ServiceTier, Usage, StopReason, Started, Finished, Failed, ErrorType, ErrorMessage, HasToolUse`. `AnthropicMessageAggregator(advertisedId, map?)` `.Feed`/`.Complete()→(status, body)`. `AnthropicErrors.FromUpstream/Error/SseEvent/TypeForStatus/StatusForType/TypeForCode`. `BridgeTokenEstimator.Estimate`. `ThinkingEnvelope.Encode/TryDecode`. `BridgeUsage(Input, Cached, Output, Reasoning)`.
+- **Follow-ups:** item 12: upstream failure before `translator.Started` → HTTP error, not SSE error; log `DroppedTools`.
+- **Learnings:** an `int` literal in a `JsonObject` makes `GetValue<long>()` throw.
+
+## Item 12 — Bridge integration
+- **Status:** done
+- **Evidence:** merge c74f75d (translator + catalog; worktrees/branches removed); commit 62dae8a. Full `dotnet build` 0 warnings; `dotnet test` 180/180 (9 new `BridgeProxyTests`); `npm run lint` 0. Manual run fakes 6330 / gateway 6331 (stopped): models endpoint lists exposed model, stream incremental, request log provider openai, model gpt-5-codex, requested id, bridge marker, reasoning tokens, 299.6 tok/s.
+- **Decisions:** bridging inside `ProxyHandler` loop (shared auth, sessions, selection, refresh, failover, limits, analytics) + `BridgeResponseWriter`; client Anthropic headers not forwarded; pre-stream upstream failure → real HTTP error; bridged count_tokens local estimate, logged without account; agents from the Anthropic request.
+- **Interface changes:** migration 7 (`requests.requested_model`, `requests.bridge`); `ProxiedRequestContext.Bridge`; `AccountSelectionRequest.AllowedAccountIds`; `RequestRecord.AccountId` nullable; analytics `requestedModel` group/filter; request log `requestedModel`, `bridge`; fake `[[fail-midstream]]`. Detail: `.claude/ledger/bridge.md`.
+- **Follow-ups:** item 13: e2e bridged scenario; README (setup, limitations: server tools dropped, count_tokens estimated). Codex-backend fake now 400s without `store:false`/`instructions`.
+- **Learnings:** `StaticWebAssetsEnabled=false` set in Gateway.csproj (stale hashed asset names broke first build after UI change); publish reportedly still copies UI — verify.
+
+## Item 13 — Bridge e2e, README, verification
+- **Status:** done
+- **Evidence:** `dotnet build` 0 warnings/errors; `dotnet test` 180/180; `npm run lint` 0; `AUX_PORTS=6300-6359 scripts/e2e.sh` 139/139; scratchpad `dotnet publish` ships `wwwroot/index.html`; browser pass (1440 light, 390 dark) of OpenAI models page, request log, analytics group by requested model. Commit 39d3481 (`e2e/run.mjs`, `README.md`).
+- **Decisions:** e2e exposes gpt-5.1-codex-max (ChatGPT, default id) and gpt-5-mini (API key, custom id `claude-gw-gpt-5-mini`); every bridged stream strictly validated.
+- **Follow-ups:** none.
+- **Learnings:** discovery `/v1/models` is recorded as an Anthropic `models` request (model `unknown`); bridged count_tokens rows: provider openai, no account/session.
