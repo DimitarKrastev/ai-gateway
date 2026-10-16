@@ -286,7 +286,7 @@ Notes:
   token event to the end of the stream (queueing and prompt processing excluded). Non-streaming: the whole latency, an
   approximation that reads slower. Only successful, non-cancelled requests with output count. Aggregates are the
   output-token-weighted mean plus p50/p95; the Analytics page charts them over time and per model × mode.
-- **Provider speed** (Analytics → Breakdown → *Speed*): one row per provider · model · speed mode, with output tokens per
+- **Provider speed** (Analytics → Breakdown → *Provider speed*): one row per provider · model · speed mode, with output tokens per
   second measured end to end, from the gateway sending the request to receiving the whole response (so it includes the
   wait for the first token), weighted by output tokens, plus p50/p95, time to first token, average duration and the
   generation-only speed for comparison. Also available as the *End-to-end tokens/s* metrics in charts

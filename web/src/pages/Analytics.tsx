@@ -49,7 +49,7 @@ type Filters = {
 const NO_FILTERS: Filters = { provider: '', accountId: '', model: '', requestedModel: '', speedMode: '', agent: '', sessionId: '', agentId: '' }
 
 const breakdownLabel = (b: string) =>
-  b === 'agentId' ? 'Agent' : b === 'speed' ? 'Speed' : (GROUPS.find((g) => g.key === b)?.label ?? (b === 'tool' ? 'Tool' : b))
+  b === 'agentId' ? 'Agent' : b === 'speed' ? 'Provider speed' : (GROUPS.find((g) => g.key === b)?.label ?? (b === 'tool' ? 'Tool' : b))
 
 type LiveState = { on: boolean; window: LiveWindowKey }
 const LIVE_KEY = 'aigw.analyticsLive'
