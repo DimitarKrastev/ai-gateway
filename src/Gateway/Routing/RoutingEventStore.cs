@@ -1,4 +1,5 @@
 using Gateway.Infrastructure;
+using Gateway.Live;
 
 namespace Gateway.Routing;
 
@@ -18,7 +19,7 @@ public sealed record RoutingEvent(long Id, DateTimeOffset At, string Provider, s
     string Reason, string? Detail);
 
 /// <summary>Log of routing decisions that moved a session between accounts or used a reset.</summary>
-public sealed class RoutingEventStore(Database db, TimeProvider time)
+public sealed class RoutingEventStore(Database db, TimeProvider time, LiveNotifier notifier)
 {
     public void Record(string provider, string? sessionId, long? from, long? to, string reason, string? detail = null)
     {
@@ -36,6 +37,7 @@ public sealed class RoutingEventStore(Database db, TimeProvider time)
         cmd.Parameters.AddWithValue("$r", reason);
         cmd.Parameters.AddWithValue("$d", (object?)detail ?? DBNull.Value);
         cmd.ExecuteNonQuery();
+        notifier.Notify(LiveTopic.Routing);
     }
 
     public IReadOnlyList<RoutingEvent> List(int limit, string? sessionId = null, long? accountId = null)

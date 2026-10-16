@@ -1,9 +1,11 @@
 import { createContext, useContext } from 'react'
 
-export type RangePreset = '1h' | '24h' | '7d' | '30d' | 'custom'
+export type RangePreset = '5m' | '15m' | '1h' | '24h' | '7d' | '30d' | 'custom'
 export type RangeState = { preset: RangePreset; customFrom: string; customTo: string }
 
 export const presetMs: Record<Exclude<RangePreset, 'custom'>, number> = {
+  '5m': 300_000,
+  '15m': 900_000,
   '1h': 3_600_000,
   '24h': 86_400_000,
   '7d': 7 * 86_400_000,

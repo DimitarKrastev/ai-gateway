@@ -7,7 +7,7 @@ import { useApi, useNow } from '../hooks'
 import type { Account, AccountKind, AccountLimits, ResetCredit } from '../types'
 
 export default function Accounts() {
-  const accounts = useApi<Account[]>('/api/accounts', 30_000)
+  const accounts = useApi<Account[]>('/api/accounts', 30_000, ['accounts', 'limits'])
   const [linking, setLinking] = useState(false)
   const now = useNow(1000)
 
@@ -218,7 +218,7 @@ function AccountCard({ account: a, now, onChanged }: { account: Account; now: nu
 }
 
 function Resets({ account, now, onUsed }: { account: Account; now: number; onUsed: (l: AccountLimits | null) => void }) {
-  const resets = useApi<ResetCredit[]>(`/api/accounts/${account.id}/resets?includeUsed=true`)
+  const resets = useApi<ResetCredit[]>(`/api/accounts/${account.id}/resets?includeUsed=true`, undefined, ['limits'])
   const [using, setUsing] = useState<ResetCredit | null>(null)
   const [removing, setRemoving] = useState<ResetCredit | null>(null)
   const [adding, setAdding] = useState(false)

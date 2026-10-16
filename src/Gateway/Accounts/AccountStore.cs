@@ -2,11 +2,12 @@ using System.Text.Json;
 using Gateway.Infrastructure;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Data.Sqlite;
+using Gateway.Live;
 
 namespace Gateway.Accounts;
 
 /// <summary>Linked accounts in SQLite; credentials are encrypted with ASP.NET Data Protection.</summary>
-public sealed class AccountStore(Database db, IDataProtectionProvider dataProtection, TimeProvider time)
+public sealed class AccountStore(Database db, IDataProtectionProvider dataProtection, TimeProvider time, LiveNotifier notifier)
 {
     private readonly IDataProtector _protector = dataProtection.CreateProtector("Gateway.Accounts.Credentials.v1");
 
@@ -49,6 +50,7 @@ public sealed class AccountStore(Database db, IDataProtectionProvider dataProtec
         cmd.Parameters.AddWithValue("$cred", Protect(credentials));
         cmd.Parameters.AddWithValue("$now", now);
         var id = Convert.ToInt64(cmd.ExecuteScalar());
+        notifier.Notify(LiveTopic.Accounts);
         return Get(id)!;
     }
 
@@ -73,7 +75,9 @@ public sealed class AccountStore(Database db, IDataProtectionProvider dataProtec
         cmd.Parameters.AddWithValue("$kind", (object?)kind ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$cred", credentials is null ? DBNull.Value : Protect(credentials));
         cmd.Parameters.AddWithValue("$now", time.GetUtcNow().ToUnixTimeMilliseconds());
-        return cmd.ExecuteNonQuery() == 0 ? null : Get(id);
+        if (cmd.ExecuteNonQuery() == 0) return null;
+        notifier.Notify(LiveTopic.Accounts);
+        return Get(id);
     }
 
     public void UpdateCredentials(long id, AccountCredentials credentials) => Update(id, null, null, null, null, credentials);
@@ -84,7 +88,9 @@ public sealed class AccountStore(Database db, IDataProtectionProvider dataProtec
         using var cmd = conn.CreateCommand();
         cmd.CommandText = "DELETE FROM accounts WHERE id = $id;";
         cmd.Parameters.AddWithValue("$id", id);
-        return cmd.ExecuteNonQuery() > 0;
+        if (cmd.ExecuteNonQuery() == 0) return false;
+        notifier.Notify(LiveTopic.Accounts);
+        return true;
     }
 
     private string Protect(AccountCredentials c) => _protector.Protect(JsonSerializer.Serialize(c));

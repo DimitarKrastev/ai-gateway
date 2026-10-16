@@ -24,7 +24,7 @@ const GROUPS = [
   { key: 'client', label: 'Client' },
 ]
 const BREAKDOWNS = ['account', 'session', 'agent', 'agentId', 'model', 'requestedModel', 'speedMode', 'modelMode', 'provider', 'client', 'tool']
-const BUCKETS = ['auto', 'minute', '5min', '15min', 'hour', '6hour', 'day']
+const BUCKETS = ['auto', '5s', '15s', '30s', 'minute', '5min', '15min', 'hour', '6hour', 'day']
 const TPS_STATS: Array<{ key: TpsStat; label: string }> = [
   { key: 'tokensPerSecond', label: 'Weighted avg' },
   { key: 'tokensPerSecondP50', label: 'p50' },
@@ -63,7 +63,7 @@ export default function Analytics() {
   // "Agent (each instance)" plots every request of every agent; metrics without a per-request value fall back to buckets.
   const perAgent = groupBy === 'agentId' && !!def.perRequest
 
-  const accounts = useApi<Account[]>('/api/accounts')
+  const accounts = useApi<Account[]>('/api/accounts', undefined, ['accounts'])
   const models = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, by: 'model', limit: 100 })}`)
   const agents = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, by: 'agent', limit: 100 })}`)
   const modes = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, by: 'speedMode', limit: 20 })}`)

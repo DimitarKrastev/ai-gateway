@@ -38,7 +38,7 @@ public static class AnalyticsEndpoints
                     error = "Unknown metric, groupBy or bucket.",
                     metrics = AnalyticsService.MetricNames,
                     groupBy = AnalyticsService.GroupNames,
-                    buckets = new[] { "auto", "minute", "5min", "15min", "hour", "6hour", "day" },
+                    buckets = new[] { "auto", "5s", "15s", "30s", "minute", "5min", "15min", "hour", "6hour", "day" },
                 });
         });
 

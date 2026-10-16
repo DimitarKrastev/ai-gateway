@@ -1,10 +1,11 @@
 using Gateway.Infrastructure;
 using Microsoft.Data.Sqlite;
+using Gateway.Live;
 
 namespace Gateway.Limits;
 
 /// <summary>Latest limit snapshot, exhaustion marks and reset credits per linked account (SQLite).</summary>
-public sealed class LimitsStore(Database db, TimeProvider time)
+public sealed class LimitsStore(Database db, TimeProvider time, LiveNotifier notifier)
 {
     // ---------- windows ----------
 
@@ -41,6 +42,7 @@ public sealed class LimitsStore(Database db, TimeProvider time)
             cmd.ExecuteNonQuery();
         }
         tx.Commit();
+        notifier.Notify(LiveTopic.Limits);
     }
 
     /// <summary>A reset was applied: every quota window starts over at 0 %.</summary>
@@ -176,6 +178,7 @@ public sealed class LimitsStore(Database db, TimeProvider time)
         cmd.Parameters.AddWithValue("$n", Db(note));
         cmd.Parameters.AddWithValue("$now", time.GetUtcNow().ToUnixTimeMilliseconds());
         var id = Convert.ToInt64(cmd.ExecuteScalar());
+        notifier.Notify(LiveTopic.Limits);
         return GetReset(accountId, id)!;
     }
 
@@ -213,6 +216,7 @@ public sealed class LimitsStore(Database db, TimeProvider time)
             del.ExecuteNonQuery();
         }
         tx.Commit();
+        notifier.Notify(LiveTopic.Limits);
     }
 
     public void MarkResetUsed(long resetId, string usedBy) =>
@@ -230,6 +234,7 @@ public sealed class LimitsStore(Database db, TimeProvider time)
         cmd.CommandText = sql;
         foreach (var (name, value) in args) cmd.Parameters.AddWithValue(name, Db(value));
         cmd.ExecuteNonQuery();
+        notifier.Notify(LiveTopic.Limits);
     }
 
     private static object Db(object? v) => v ?? DBNull.Value;

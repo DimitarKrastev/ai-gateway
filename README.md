@@ -288,6 +288,12 @@ Notes:
 - Claude Code requests for exposed OpenAI models are counted as OpenAI traffic: *model* is the OpenAI model actually
   used, *requested model* the advertised id (see [Using OpenAI models from Claude Code](#using-openai-models-from-claude-code)).
 - Requests the gateway retried on another account after a 429 are shown in the request log but excluded from totals.
+- **Live updates:** the UI keeps a SignalR connection to `/api/live` (admin session required). The gateway pushes the
+  in-flight snapshot as requests start and finish, and a "changed" notice (usage, limits, accounts, routing) at most every
+  250 ms; pages refetch what they show, and a range that ends *now* slides forward with each new request (at most once a
+  second). The top bar shows **Live** while connected; without the connection pages fall back to periodic refresh.
+  For second-level detail pick the **5m** or **15m** range (auto bucket 5 s; **1h** gets 15 s) or a 5s/15s/30s bucket on
+  the Analytics page.
 
 ## End-to-end run against fakes
 

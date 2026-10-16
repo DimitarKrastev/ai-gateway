@@ -158,7 +158,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
 
     private static readonly (string Name, long Ms)[] Buckets =
     [
-        ("minute", 60_000), ("5min", 300_000), ("15min", 900_000), ("hour", 3_600_000), ("6hour", 21_600_000), ("day", 86_400_000),
+        ("5s", 5_000), ("15s", 15_000), ("30s", 30_000), ("minute", 60_000), ("5min", 300_000), ("15min", 900_000), ("hour", 3_600_000), ("6hour", 21_600_000), ("day", 86_400_000),
     ];
 
     public static string AgentKindSql(string p = "") => $"({p}client || ':' || COALESCE({p}agent_role, 'none'))";

@@ -273,3 +273,13 @@ button.icon { background: none; color: var(--muted); font-size: 1.3rem; line-hei
   .grid-2, .accounts { grid-template-columns: 1fr; }
   .kinds { grid-template-columns: 1fr; }
 }
+
+/* Live connection indicator in the top bar */
+.live-status { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.live-status.live { color: var(--ok); }
+.live-status.reconnecting, .live-status.connecting { color: var(--warn); }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+@media (prefers-reduced-motion: no-preference) {
+  .live-status.live .live-dot { animation: live-pulse 2s ease-in-out infinite; }
+}
+@keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }

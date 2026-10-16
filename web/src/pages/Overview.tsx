@@ -6,6 +6,7 @@ import { PageHead, RangePicker } from '../components/Layout'
 import { AccountStatus, Async, Badge, Empty, Kpi, LimitBar, Panel } from '../components/ui'
 import { fmtCompact, fmtInt, fmtMs, fmtPct, fmtUsd, kindLabel, shortId } from '../format'
 import { useApi, useNow } from '../hooks'
+import { useLive } from '../liveContext'
 import { useRange } from '../rangeContext'
 import type { Account, Live, Summary, Timeseries } from '../types'
 
@@ -13,8 +14,13 @@ export default function Overview() {
   const { from, to } = useRange()
   const range = { from, to }
   const summary = useApi<Summary>(`/api/analytics/summary${qs(range)}`)
-  const live = useApi<Live>('/api/analytics/live', 3000)
-  const accounts = useApi<Account[]>('/api/accounts', 30_000)
+  // In-flight requests are pushed by the gateway; fetch on load and after new usage (5-min counts), poll only offline.
+  const pushed = useLive()
+  const fetchedLive = useApi<Live>('/api/analytics/live', pushed.status === 'live' ? undefined : 3000, ['usage'])
+  const usePushed = pushed.inFlight !== undefined && pushed.inFlight.receivedAt > fetchedLive.fetchedAt
+  const live = usePushed ? { ...fetchedLive, data: pushed.inFlight!.data } : fetchedLive
+  const liveAt = usePushed ? pushed.inFlight!.receivedAt : fetchedLive.fetchedAt
+  const accounts = useApi<Account[]>('/api/accounts', 30_000, ['accounts', 'limits'])
   const cost = useApi<Timeseries>(`/api/analytics/timeseries${qs({ ...range, metric: 'cost', groupBy: 'provider' })}`)
   const tok = useApi<Timeseries>(
     `/api/analytics/timeseries${qs({ ...range, metric: 'inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens', groupBy: 'none' })}`,
@@ -127,7 +133,7 @@ export default function Overview() {
                       <td className="mono">{shortId(r.sessionId)}</td>
                       <td>{r.agentRole ?? '—'}</td>
                       <td>{r.model ?? '—'}</td>
-                      <td className="num">{fmtMs(r.elapsedMs)}</td>
+                      <td className="num">{fmtMs(r.elapsedMs + Math.max(0, now - liveAt))}</td>
                     </tr>
                   ))}
                 </tbody>

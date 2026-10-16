@@ -16,8 +16,8 @@ export default function Sessions() {
   const [offset, setOffset] = useState(0)
   const [provider, setProvider] = useState('')
   const sessions = useApi<{ total: number; items: SessionRow[] }>(`/api/analytics/sessions${qs({ from, to, provider, limit: PAGE, offset })}`)
-  const events = useApi<RoutingEvent[]>('/api/routing/events?limit=50')
-  const accounts = useApi<Account[]>('/api/accounts')
+  const events = useApi<RoutingEvent[]>('/api/routing/events?limit=50', undefined, ['routing'])
+  const accounts = useApi<Account[]>('/api/accounts', undefined, ['accounts'])
 
   return (
     <>

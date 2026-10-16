@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from './auth'
 import { useAuth } from './authContext'
 import Layout from './components/Layout'
+import { LiveProvider } from './live'
 import { RangeProvider } from './range'
 import Accounts from './pages/Accounts'
 import Analytics from './pages/Analytics'
@@ -28,9 +29,11 @@ export default function App() {
           <Route
             element={
               <RequireAuth>
-                <RangeProvider>
-                  <Layout />
-                </RangeProvider>
+                <LiveProvider>
+                  <RangeProvider>
+                    <Layout />
+                  </RangeProvider>
+                </LiveProvider>
               </RequireAuth>
             }
           >

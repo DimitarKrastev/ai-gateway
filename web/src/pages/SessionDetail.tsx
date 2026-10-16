@@ -18,7 +18,7 @@ export default function SessionDetail() {
   const [to] = useState(() => Date.now() + 60_000)
   const filter = useMemo(() => ({ provider, sessionId, from: 0, to }), [provider, sessionId, to])
 
-  const summary = useApi<Summary>(`/api/analytics/summary${qs(filter)}`, 10_000)
+  const summary = useApi<Summary>(`/api/analytics/summary${qs(filter)}`, 10_000, ['usage'])
   // Charts span the session's own lifetime (bucketing from the epoch would be meaningless).
   const first = toMs(summary.data?.firstSeen)
   const last = toMs(summary.data?.lastSeen)
@@ -29,14 +29,15 @@ export default function SessionDetail() {
   const tokens = useApi<Timeseries>(
     span && `/api/analytics/timeseries${qs({ ...span, metric: 'inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens' })}`,
     10_000,
+    ['usage'],
   )
   // One line per agent instance, a point per request: when each agent appeared and how its context grew.
-  const context = useApi<AgentSeriesResult>(span && `/api/analytics/agent-series${qs({ ...span, metric: 'contextMax', limit: 20 })}`, 10_000)
-  const agents = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ ...filter, by: 'agentId' })}`, 10_000)
-  const tools = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ ...filter, by: 'tool' })}`, 10_000)
-  const requests = useApi<{ items: RequestRow[] }>(`/api/analytics/requests${qs({ ...filter, limit: 200, includeRetried: true })}`, 10_000)
-  const events = useApi<RoutingEvent[]>(`/api/routing/events${qs({ sessionId, limit: 100 })}`)
-  const accounts = useApi<Account[]>('/api/accounts')
+  const context = useApi<AgentSeriesResult>(span && `/api/analytics/agent-series${qs({ ...span, metric: 'contextMax', limit: 20 })}`, 10_000, ['usage'])
+  const agents = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ ...filter, by: 'agentId' })}`, 10_000, ['usage'])
+  const tools = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ ...filter, by: 'tool' })}`, 10_000, ['usage'])
+  const requests = useApi<{ items: RequestRow[] }>(`/api/analytics/requests${qs({ ...filter, limit: 200, includeRetried: true })}`, 10_000, ['usage'])
+  const events = useApi<RoutingEvent[]>(`/api/routing/events${qs({ sessionId, limit: 100 })}`, undefined, ['routing'])
+  const accounts = useApi<Account[]>('/api/accounts', undefined, ['accounts'])
 
   return (
     <>

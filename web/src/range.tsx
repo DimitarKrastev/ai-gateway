@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useLive } from './liveContext'
 import { presetMs, RangeContext, type Ctx, type RangeState } from './rangeContext'
 
 const STORAGE_KEY = 'aigw.range'
@@ -17,12 +18,29 @@ export function RangeProvider({ children }: { children: ReactNode }) {
   const [range, setRangeState] = useState<RangeState>(load)
   const [anchor, setAnchor] = useState(() => Date.now())
 
-  // Rolling presets follow the clock: re-anchor every 30 s so every page refreshes together.
+  // A window that ends "now" (rolling presets, or custom with no end) follows the clock and new traffic.
+  const followsNow = range.preset !== 'custom' || !range.customTo
+  // Slide with the clock even when nothing happens; short windows slide in smaller steps.
+  const tickMs = range.preset === '5m' || range.preset === '15m' ? 5_000 : range.preset === '1h' ? 15_000 : 30_000
   useEffect(() => {
-    if (range.preset === 'custom') return
-    const id = window.setInterval(() => setAnchor(Date.now()), 30_000)
+    if (!followsNow) return
+    const id = window.setInterval(() => setAnchor(Date.now()), tickMs)
     return () => window.clearInterval(id)
-  }, [range.preset])
+  }, [followsNow, tickMs])
+
+  // Live: re-anchor when the gateway records a request, so every page refetches with it in range. At most once a
+  // second (a burst of subagent traffic is one refetch), and the last change is never dropped.
+  const { versions } = useLive()
+  const lastAnchor = useRef(0)
+  useEffect(() => {
+    if (!followsNow || versions.usage === 0) return
+    const wait = Math.max(0, lastAnchor.current + 1000 - Date.now())
+    const id = window.setTimeout(() => {
+      lastAnchor.current = Date.now()
+      setAnchor(Date.now())
+    }, wait)
+    return () => window.clearTimeout(id)
+  }, [versions.usage, followsNow])
 
   const value = useMemo<Ctx>(() => {
     let from: number

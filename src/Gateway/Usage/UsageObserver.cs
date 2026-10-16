@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Gateway.Live;
 using Gateway.Proxy;
 
 namespace Gateway.Usage;
@@ -64,17 +65,18 @@ public sealed record LiveRequest(
     string? AgentId, string? AgentRole, string Client, string? Model, bool Stream, string Endpoint, long StartedAt,
     string? SpeedMode = null, string? RequestedModel = null);
 
-public sealed class LiveRequests
+public sealed class LiveRequests(LiveNotifier notifier)
 {
     private readonly ConcurrentDictionary<string, LiveRequest> _items = new();
-    public void Add(LiveRequest r) => _items[r.Key] = r;
-    public void Remove(string key) => _items.TryRemove(key, out _);
+    public void Add(LiveRequest r) { _items[r.Key] = r; notifier.Notify(LiveTopic.InFlight); }
+    public void Remove(string key) { if (_items.TryRemove(key, out _)) notifier.Notify(LiveTopic.InFlight); }
     public IReadOnlyList<LiveRequest> Snapshot() => _items.Values.OrderBy(r => r.StartedAt).ToList();
 }
 
 /// <summary>Captures usage of every proxied attempt and records it; see <see cref="ResponseUsageParser"/>.</summary>
 public sealed class UsageObserver(
-    UsageStore store, AgentIdentifier agents, PricingTable pricing, LiveRequests live, TimeProvider time, ILogger<UsageObserver> log)
+    UsageStore store, AgentIdentifier agents, PricingTable pricing, LiveRequests live, LiveNotifier notifier, TimeProvider time,
+    ILogger<UsageObserver> log)
     : IRequestObserver
 {
     private const string StateKey = "usage.state";
@@ -153,6 +155,7 @@ public sealed class UsageObserver(
                 SpeedMode = Endpoints.IsGeneration(info.Endpoint) ? Cap(SpeedModes.Resolve(info.RequestedSpeed, usage.ReportedSpeed)) : null,
                 RequestBytes = ctx.RequestBody.Length, ResponseBytes = ctx.ResponseBytes,
             });
+            notifier.Notify(LiveTopic.Usage);
         }
         catch (Exception e)
         {

@@ -22,7 +22,7 @@ export default function Requests() {
   const [error, setError] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
   const [tick, setTick] = useState(0)
-  const accounts = useApi<Account[]>('/api/accounts')
+  const accounts = useApi<Account[]>('/api/accounts', undefined, ['accounts'])
 
   useEffect(() => {
     let cancelled = false

@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../authContext'
+import { useLive } from '../liveContext'
 import { useRange, type RangePreset } from '../rangeContext'
 
 const NAV = [
@@ -26,6 +27,7 @@ export default function Layout() {
           ))}
         </nav>
         <span className="spacer" />
+        <LiveIndicator />
         <span className="muted user">{user}</span>
         <button className="link" onClick={() => void logout()}>
           Sign out
@@ -38,7 +40,22 @@ export default function Layout() {
   )
 }
 
-const PRESETS: RangePreset[] = ['1h', '24h', '7d', '30d', 'custom']
+function LiveIndicator() {
+  const { status } = useLive()
+  const label = { live: 'Live', connecting: 'Connecting…', reconnecting: 'Reconnecting…', offline: 'Offline' }[status]
+  const title =
+    status === 'live'
+      ? 'Updates are pushed by the gateway as requests happen.'
+      : 'No live connection: pages refresh periodically until it is back.'
+  return (
+    <span className={`live-status ${status}`} title={title} role="status">
+      <span className="live-dot" aria-hidden="true" />
+      {label}
+    </span>
+  )
+}
+
+const PRESETS: RangePreset[] = ['5m', '15m', '1h', '24h', '7d', '30d', 'custom']
 
 export function RangePicker() {
   const { range, setRange, refresh } = useRange()

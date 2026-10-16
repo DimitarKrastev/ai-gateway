@@ -83,6 +83,7 @@ export function fmtAxisTime(ms: number, bucketMs: number): string {
   if (bucketMs >= 86_400_000) return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
   if (bucketMs >= 3_600_000 * 6)
     return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit' })
+  if (bucketMs < 60_000) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
