@@ -6,6 +6,7 @@ const NAV = [
   { to: '/', label: 'Overview', end: true },
   { to: '/analytics', label: 'Analytics' },
   { to: '/accounts', label: 'Accounts' },
+  { to: '/openai-models', label: 'OpenAI models' },
   { to: '/sessions', label: 'Sessions' },
   { to: '/requests', label: 'Requests' },
   { to: '/settings', label: 'Settings' },

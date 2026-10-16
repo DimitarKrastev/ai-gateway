@@ -32,6 +32,25 @@ public sealed class TokenRefresher(
     public Task<AccountCredentials?> ForceRefreshAsync(LinkedAccount account, string? staleAccessToken, CancellationToken ct) =>
         account.IsOAuth ? RefreshAsync(account.Id, staleAccessToken, force: true, ct) : Task.FromResult<AccountCredentials?>(null);
 
+    /// <summary>
+    /// Sends a gateway-originated request (not a proxied one) with fresh credentials, refreshing and retrying once after a
+    /// 401 for OAuth accounts. <paramref name="build"/> creates the request for the given credentials (it may be called twice).
+    /// </summary>
+    public async Task<HttpResponseMessage> SendAuthenticatedAsync(
+        LinkedAccount account, Func<AccountCredentials, HttpRequestMessage> build, CancellationToken ct)
+    {
+        var client = http.CreateClient(ProxyHandler.UpstreamClientName);
+        var creds = await EnsureFreshAsync(account, ct);
+        var res = await client.SendAsync(build(creds), ct);
+        if (res.StatusCode == System.Net.HttpStatusCode.Unauthorized && account.IsOAuth && creds.RefreshToken != null
+            && await ForceRefreshAsync(account, creds.AccessToken, ct) is { } fresh)
+        {
+            res.Dispose();
+            res = await client.SendAsync(build(fresh), ct);
+        }
+        return res;
+    }
+
     private bool NeedsRefresh(AccountCredentials c) =>
         c.AccessToken == null || (c.ExpiresAt is { } exp && exp - RefreshSkew <= time.GetUtcNow());
 

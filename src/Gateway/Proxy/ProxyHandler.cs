@@ -184,15 +184,25 @@ public sealed class ProxyHandler(
                 req.Headers.TryAddWithoutValidation(name, (IEnumerable<string>)value!);
         }
 
-        switch (pctx.Account.Kind)
+        InjectCredentials(req, pctx.Account.Kind, creds, incoming.Headers["anthropic-beta"].ToString());
+        return req;
+    }
+
+    /// <summary>
+    /// Puts the account's credential on an upstream request (API key / OAuth bearer, <c>chatgpt-account-id</c>, Anthropic
+    /// OAuth beta flag). <paramref name="anthropicBeta"/> is the client's <c>anthropic-beta</c> header, if any.
+    /// </summary>
+    public static void InjectCredentials(HttpRequestMessage req, string kind, AccountCredentials creds, string? anthropicBeta = null)
+    {
+        switch (kind)
         {
             case AccountKinds.AnthropicApiKey:
                 req.Headers.TryAddWithoutValidation("x-api-key", creds.ApiKey);
-                SetBeta(req, incoming, add: false);
+                SetBeta(req, anthropicBeta, add: false);
                 break;
             case AccountKinds.AnthropicOAuth:
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", creds.AccessToken);
-                SetBeta(req, incoming, add: true);
+                SetBeta(req, anthropicBeta, add: true);
                 break;
             case AccountKinds.OpenAIApiKey:
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", creds.ApiKey);
@@ -202,13 +212,12 @@ public sealed class ProxyHandler(
                 req.Headers.TryAddWithoutValidation("chatgpt-account-id", creds.ChatGptAccountId);
                 break;
         }
-        return req;
     }
 
     /// <summary>Subscription tokens need the OAuth beta flag; API keys must not send it.</summary>
-    private static void SetBeta(HttpRequestMessage req, HttpRequest incoming, bool add)
+    private static void SetBeta(HttpRequestMessage req, string? anthropicBeta, bool add)
     {
-        var flags = incoming.Headers["anthropic-beta"].ToString()
+        var flags = (anthropicBeta ?? "")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(f => f != OAuthBeta).ToList();
         if (add) flags.Add(OAuthBeta);
@@ -264,7 +273,8 @@ public sealed class ProxyHandler(
         return null;
     }
 
-    private static string? PresentedKey(HttpRequest req, string provider)
+    /// <summary>The gateway client key the agent presented (Bearer, or <c>x-api-key</c> for Anthropic).</summary>
+    public static string? PresentedKey(HttpRequest req, string provider)
     {
         var auth = req.Headers.Authorization.ToString();
         if (auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) return auth[7..].Trim();

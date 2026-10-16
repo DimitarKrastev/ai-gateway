@@ -1,8 +1,11 @@
 export class ApiError extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  /** Parsed JSON error body, if any (e.g. field-level validation errors). */
+  readonly body: unknown
+  constructor(status: number, message: string, body?: unknown) {
     super(message)
     this.status = status
+    this.body = body
   }
 }
 
@@ -29,7 +32,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith('/api/auth/')) onUnauthorized?.()
     const message = (body as { error?: string } | undefined)?.error ?? (res.statusText || `HTTP ${res.status}`)
-    throw new ApiError(res.status, message)
+    throw new ApiError(res.status, message, body)
   }
   return body as T
 }

@@ -250,6 +250,22 @@ button.icon { background: none; color: var(--muted); font-size: 1.3rem; line-hei
 .chart { width: 100%; }
 .chart-note { margin: 6px 0 0; }
 
+/* OpenAI models (bridge) */
+.bridge-callout { margin-bottom: 10px; }
+.bridge-note { margin: 4px 0 8px; max-width: 860px; }
+.bridge-toolbar { margin-bottom: 8px; justify-content: space-between; }
+.bridge-toolbar input { min-width: 220px; }
+.bridge-table td { vertical-align: top; }
+.bridge-table tr.on td { background: var(--accent-soft); }
+.bridge-table td input[type='checkbox'] { margin-top: 7px; width: 16px; height: 16px; accent-color: var(--accent); }
+.bridge-model { padding-top: 10px !important; }
+.bridge-desc { white-space: normal; max-width: 280px; margin-top: 2px; }
+.bridge-input { width: 260px; }
+.bridge-input.invalid { border-color: var(--danger); }
+.field-error { color: var(--danger); font-size: 0.78rem; white-space: normal; max-width: 260px; margin-top: 3px; }
+.bridge-sources { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0 2px; }
+.bridge-add { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--grid); }
+
 @media (max-width: 720px) {
   .topbar { flex-wrap: wrap; height: auto; padding: 8px 12px; gap: 8px; }
   .nav { order: 3; width: 100%; }

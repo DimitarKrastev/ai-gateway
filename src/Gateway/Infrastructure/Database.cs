@@ -171,6 +171,32 @@ public sealed class Database
             ALTER TABLE requests ADD COLUMN reported_speed TEXT;
             ALTER TABLE requests ADD COLUMN speed_mode TEXT;
             """),
+        // OpenAI models offered to Claude Code through the Anthropic→OpenAI bridge (see Gateway.Bridge.BridgeModelCatalog):
+        // the merged model lists of the linked OpenAI accounts plus manual entries, and which ones are exposed under which id.
+        (6, """
+            CREATE TABLE bridge_models (
+                model_id               TEXT PRIMARY KEY,
+                display_name           TEXT,
+                description            TEXT,
+                efforts                TEXT,
+                default_effort         TEXT,
+                manual                 INTEGER NOT NULL DEFAULT 0,
+                exposed                INTEGER NOT NULL DEFAULT 0,
+                advertised_id          TEXT,
+                advertised_name        TEXT,
+                advertised_description TEXT,
+                first_seen             INTEGER NOT NULL,
+                last_seen              INTEGER,
+                updated_at             INTEGER NOT NULL
+            );
+            CREATE TABLE bridge_model_accounts (
+                model_id   TEXT NOT NULL REFERENCES bridge_models(model_id) ON DELETE CASCADE,
+                account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                source     TEXT NOT NULL,
+                last_seen  INTEGER NOT NULL,
+                PRIMARY KEY (model_id, account_id)
+            );
+            """),
     ];
 
     public Database(GatewayOptions options)
