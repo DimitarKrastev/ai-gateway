@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { fmtCompact } from '../format'
 import { useNow } from '../hooks'
 import { useLive, useMeter, type MeterSample } from '../liveContext'
@@ -133,7 +133,9 @@ export default function LiveThroughput() {
   }, [samples, newest, width, winMs, now])
 
   const groups = useRef<(SVGGElement | null)[]>([])
-  useEffect(() => {
+  // Layout effect: a rebuilt path must get its offset before the browser paints it, or it shows for one frame shifted by
+  // the previous path's offset (up to a second's width): a visible flicker once or twice a second.
+  useLayoutEffect(() => {
     const apply = () => {
       const tx = -(Date.now() - skew - build.builtAt) * build.k
       for (const g of groups.current) g?.setAttribute('transform', `translate(${tx.toFixed(2)},0)`)
@@ -142,6 +144,7 @@ export default function LiveThroughput() {
       apply()
       return
     }
+    apply()
     let raf = 0
     const frame = () => {
       apply()

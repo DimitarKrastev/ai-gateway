@@ -68,7 +68,10 @@ Tests never contact real providers: every upstream is the in-memory fake (`FakeP
   (ASP.NET Data Protection keys that encrypt account credentials), `admin-password.txt`, `gateway.pid` and
   `logs/gateway.log`. Back it up to keep accounts and history; deleting `keys/` makes stored credentials unreadable.
 - Admin password: `GATEWAY_ADMIN_PASSWORD` if set, otherwise generated on first start into
-  `<data dir>/admin-password.txt`.
+  `<data dir>/admin-password.txt`. Change it under **Settings → Admin password** (current password + a new one of at
+  least 12 characters): only a salted PBKDF2 hash is kept (`<data dir>/admin-password.hash`), the generated file is
+  deleted, and other browser sessions are signed out. A password set by `GATEWAY_ADMIN_PASSWORD` can only be changed
+  there. Forgot it? Stop the gateway, delete `admin-password.hash`, and start it: a new password is generated.
 - Manual run without the scripts: `dotnet run --project src/Gateway` (data in `./data` relative to the working directory).
 
 ## Linking accounts

@@ -12,7 +12,93 @@ export default function Settings() {
       <PageHead title="Settings" />
       <RoutingPanel />
       <ClientKeysPanel />
+      <PasswordPanel />
     </>
+  )
+}
+
+type PasswordInfo = { source: 'configured' | 'generated' | 'custom'; changeable: boolean; minLength: number }
+
+function PasswordPanel() {
+  const info = useApi<PasswordInfo>('/api/auth/password')
+  const [current, setCurrent] = useState('')
+  const [next, setNext] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [done, setDone] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const min = info.data?.minLength ?? 12
+
+  async function change(e: FormEvent) {
+    e.preventDefault()
+    setError(null)
+    setDone(false)
+    if (next.length < min) return setError(`The new password must be at least ${min} characters.`)
+    if (next !== confirm) return setError('The new passwords do not match.')
+    setBusy(true)
+    try {
+      await post('/api/auth/change-password', { currentPassword: current, newPassword: next })
+      setCurrent('')
+      setNext('')
+      setConfirm('')
+      setDone(true)
+      info.reload()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Panel title="Admin password">
+      <Async state={info}>
+        {(p) =>
+          !p.changeable ? (
+            <p className="muted small">
+              The password is set by <code>GATEWAY_ADMIN_PASSWORD</code> (or <code>Gateway:AdminPassword</code>). Change it there and restart the
+              gateway.
+            </p>
+          ) : (
+            <>
+              <p className="muted small">
+                {p.source === 'generated'
+                  ? 'You are using the generated password from admin-password.txt. After a change only a salted hash is kept and that file is deleted.'
+                  : 'Only a salted hash of the password is stored.'}{' '}
+                Changing it signs out every other browser session.
+              </p>
+              <form className="inline-form" onSubmit={change}>
+                <label className="grow">
+                  Current password
+                  <input type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} required />
+                </label>
+                <label className="grow">
+                  New password
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    minLength={min}
+                    value={next}
+                    onChange={(e) => setNext(e.target.value)}
+                    placeholder={`at least ${min} characters`}
+                    required
+                  />
+                </label>
+                <label className="grow">
+                  Repeat new password
+                  <input type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required />
+                </label>
+                <button type="submit" disabled={busy}>
+                  {busy ? 'Changing…' : 'Change password'}
+                </button>
+              </form>
+              {error && <ErrorBox error={error} />}
+              {done && <p className="small ok-text">Password changed. Other sessions have been signed out.</p>}
+            </>
+          )
+        }
+      </Async>
+    </Panel>
   )
 }
 
