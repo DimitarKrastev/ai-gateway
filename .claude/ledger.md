@@ -39,3 +39,11 @@
 - **Interface changes:** `AccountView.limits`; `/api/accounts/{id}/limits[/refresh]`, `/api/accounts/{id}/resets[/{rid}/use]`, `/api/settings`, `/api/routing/events`. Shapes: `.claude/ledger/limits.md`.
 - **Follow-ups:** UI item: account cards (windows, exhausted badge, resets with Use button, refresh), settings toggles, routing-event list. README: resets are an assumed provider API; manual credits; maximize semantics.
 - **Learnings:** Fake windows with `IncrementPerRequest: 0` keep routing tests deterministic.
+
+## Item 6 — Web UI
+- **Status:** done
+- **Evidence:** `npm run build` + `npm run lint` (oxlint) clean; `dotnet build` 0 warnings; `dotnet test` 64/64. Browser pass (Playwright, light + dark + 390px mobile) against gateway on 6205 + standalone fakes on 6204 seeded with Claude Code/Codex-shaped traffic (5 accounts, 4 sessions, subagents, tool calls, parallel requests, an error): every page rendered with data, use-reset/link/create-key flows worked, only console error is the expected pre-login 401. Processes stopped. Commit dbf94f6 (`web/src/**`, `web/vite.config.ts`).
+- **Decisions:** Global time range (1h/24h/7d/30d/custom, auto re-anchors every 30 s) in `rangeContext`; `useApi` keeps stale data while refetching; session detail charts span the session's own first/last seen (from=0 would create 20k buckets); request log pages all history via `nextBefore`; confirm dialogs are custom modals (no `window.confirm`); chunk warning limit raised to 1000 kB (Recharts).
+- **Interface changes:** none (UI only consumes item 3–5 APIs). Routes: `/`, `/analytics`, `/accounts`, `/sessions`, `/sessions/:provider/:sessionId`, `/requests`, `/settings`, `/login`.
+- **Follow-ups:** Item 7: running `dotnet src/Gateway/bin/.../Gateway.dll` from the repo root serves 404 for `/` — content root is the cwd, so set `GATEWAY_WEB_ROOT` or run from the publish dir. Parallel `[[slow:2500]]` requests logged ~30 s latency — worth a look in e2e (fake or proxy timing).
+- **Learnings:** Playwright 1.56 npm + cached `chromium_headless_shell-1248` (pass `executablePath`) works offline; keep it in the scratchpad.
