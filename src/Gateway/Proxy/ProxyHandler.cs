@@ -86,6 +86,7 @@ public sealed class ProxyHandler(
             HttpResponseMessage? response = null;
             try
             {
+                Notify(o => o.OnRequestStarted(pctx));
                 response = await SendWithAuthAsync(ctx.Request, pctx, ct);
                 pctx.StatusCode = (int)response.StatusCode;
                 pctx.ResponseStartedAt = time.GetUtcNow();

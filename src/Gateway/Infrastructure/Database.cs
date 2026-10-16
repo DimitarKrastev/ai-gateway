@@ -52,6 +52,62 @@ public sealed class Database
             );
             CREATE INDEX ix_session_bindings_account ON session_bindings(account_id, last_seen);
             """),
+        // One row per upstream attempt (see Gateway.Usage). account_id has no FK: history outlives deleted accounts.
+        (3, """
+            CREATE TABLE requests (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id          TEXT NOT NULL,
+                attempt             INTEGER NOT NULL,
+                retried             INTEGER NOT NULL DEFAULT 0,
+                provider            TEXT NOT NULL,
+                account_id          INTEGER,
+                account_kind        TEXT,
+                session_id          TEXT,
+                session_source      TEXT,
+                client_key_id       INTEGER,
+                client              TEXT NOT NULL,
+                client_version      TEXT,
+                agent_id            TEXT,
+                agent_role          TEXT,
+                method              TEXT NOT NULL,
+                path                TEXT NOT NULL,
+                endpoint            TEXT NOT NULL,
+                model               TEXT,
+                stream              INTEGER NOT NULL DEFAULT 0,
+                status              INTEGER NOT NULL DEFAULT 0,
+                error_type          TEXT,
+                stop_reason         TEXT,
+                cancelled           INTEGER NOT NULL DEFAULT 0,
+                input_tokens        INTEGER NOT NULL DEFAULT 0,
+                output_tokens       INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+                cache_write_tokens  INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens    INTEGER NOT NULL DEFAULT 0,
+                context_tokens      INTEGER NOT NULL DEFAULT 0,
+                tool_calls          INTEGER NOT NULL DEFAULT 0,
+                cost_usd            REAL NOT NULL DEFAULT 0,
+                priced              INTEGER NOT NULL DEFAULT 0,
+                started_at          INTEGER NOT NULL,
+                response_started_at INTEGER,
+                first_byte_at       INTEGER,
+                completed_at        INTEGER NOT NULL,
+                request_bytes       INTEGER NOT NULL DEFAULT 0,
+                response_bytes      INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX ix_requests_time ON requests(started_at);
+            CREATE INDEX ix_requests_account ON requests(account_id, started_at);
+            CREATE INDEX ix_requests_session ON requests(session_id, started_at);
+            CREATE INDEX ix_requests_model ON requests(model, started_at);
+            CREATE INDEX ix_requests_agent ON requests(agent_id, started_at);
+            CREATE TABLE request_tools (
+                request_row_id INTEGER NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+                started_at     INTEGER NOT NULL,
+                tool           TEXT NOT NULL,
+                count          INTEGER NOT NULL
+            );
+            CREATE INDEX ix_request_tools_time ON request_tools(started_at);
+            CREATE INDEX ix_request_tools_request ON request_tools(request_row_id);
+            """),
     ];
 
     public Database(GatewayOptions options)

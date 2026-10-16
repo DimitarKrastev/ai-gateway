@@ -14,6 +14,8 @@ namespace Gateway.Tests;
 public sealed class ProxyGatewayFactory(FakeProviderServer fake) : GatewayFactory
 {
     public FakeProviderServer Fake { get; } = fake;
+    /// <summary>Extra test service registrations, e.g. additional request observers.</summary>
+    public Action<IServiceCollection>? ExtraServices { get; init; }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -21,7 +23,10 @@ public sealed class ProxyGatewayFactory(FakeProviderServer fake) : GatewayFactor
         foreach (var name in new[] { "AnthropicApi", "AnthropicAuth", "OpenAIApi", "ChatGptBackend", "OpenAIAuth" })
             builder.UseSetting($"Gateway:Upstreams:{name}", Fake.BaseUrl);
         builder.ConfigureTestServices(s =>
-            s.AddHttpClient(ProxyHandler.UpstreamClientName).ConfigurePrimaryHttpMessageHandler(() => Fake.CreateHandler()));
+        {
+            s.AddHttpClient(ProxyHandler.UpstreamClientName).ConfigurePrimaryHttpMessageHandler(() => Fake.CreateHandler());
+            ExtraServices?.Invoke(s);
+        });
     }
 
     public async Task<string> CreateClientKeyAsync(HttpClient admin, string name = "test")

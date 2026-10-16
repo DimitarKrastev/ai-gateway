@@ -49,6 +49,8 @@ public sealed class ProxiedRequestContext
 /// </summary>
 public interface IRequestObserver
 {
+    /// <summary>Called before each upstream attempt is sent.</summary>
+    void OnRequestStarted(ProxiedRequestContext ctx) { }
     void OnResponseStarted(ProxiedRequestContext ctx) { }
     void OnResponseChunk(ProxiedRequestContext ctx, ReadOnlySpan<byte> chunk) { }
     Task OnCompletedAsync(ProxiedRequestContext ctx) => Task.CompletedTask;
