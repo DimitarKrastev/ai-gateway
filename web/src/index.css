@@ -315,3 +315,15 @@ button.icon { background: none; color: var(--muted); font-size: 1.3rem; line-hei
 .tp-strip.prompt .tp-line { stroke: var(--tp-prompt); }
 .tp-axis-labels { display: flex; justify-content: space-between; font-size: 0.72rem; margin-top: 2px; }
 .ok-text { color: var(--ok); margin: 8px 0 0; }
+
+/* Live mode (Analytics): checkbox and scrolling charts */
+.live-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 0.9rem; font-weight: 600; cursor: pointer; }
+.live-chart { width: 100%; min-width: 0; }
+.live-chart-plot { width: 100%; }
+.live-chart-plot svg { display: block; overflow: hidden; }
+.live-chart-empty { font-size: 13px; fill: var(--muted); }
+.live-legend { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.live-legend button { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; padding: 2px 0; color: var(--text); font-size: 0.82rem; cursor: pointer; }
+.live-legend button.off { opacity: 0.4; }
+.live-legend .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.live-legend .value { color: var(--muted); font-variant-numeric: tabular-nums; }

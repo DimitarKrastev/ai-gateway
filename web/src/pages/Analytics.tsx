@@ -1,12 +1,15 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { qs } from '../api'
 import BreakdownTable from '../components/BreakdownTable'
 import { AgentChart, ModeComparisonChart, TimeChart, type TpsStat } from '../components/charts'
 import { PageHead, RangePicker } from '../components/Layout'
+import LiveChart from '../components/LiveChart'
 import { Async, Empty, Kpi, Panel } from '../components/ui'
 import { fmtCompact, fmtInt, fmtTps, fmtUsd } from '../format'
-import { useApi } from '../hooks'
-import { metricDef, METRICS } from '../metrics'
+import { useApi, useNow } from '../hooks'
+import type { LiveTopic } from '../liveContext'
+import { LIVE_WINDOWS, type LiveSeries, type LiveWindowKey } from '../liveWindows'
+import { metricDef, METRICS, PALETTE } from '../metrics'
 import { useRange } from '../rangeContext'
 import type { Account, AgentSeriesResult, BreakdownRow, Summary, Timeseries } from '../types'
 
@@ -46,8 +49,51 @@ const NO_FILTERS: Filters = { provider: '', accountId: '', model: '', requestedM
 const breakdownLabel = (b: string) =>
   b === 'agentId' ? 'Agent' : (GROUPS.find((g) => g.key === b)?.label ?? (b === 'tool' ? 'Tool' : b))
 
+type LiveState = { on: boolean; window: LiveWindowKey }
+const LIVE_KEY = 'aigw.analyticsLive'
+
+function loadLive(): LiveState {
+  try {
+    const v = JSON.parse(localStorage.getItem(LIVE_KEY) ?? 'null') as LiveState | null
+    if (v && LIVE_WINDOWS.some((w) => w.key === v.window)) return { on: !!v.on, window: v.window }
+  } catch {
+    /* ignore */
+  }
+  return { on: false, window: '5m' }
+}
+
+const seriesColor = (label: string, i: number) => (label.startsWith('Other') ? PALETTE[8] : PALETTE[i % 8])
+
+function liveFromTimeseries(d: Timeseries): LiveSeries[] {
+  return d.series.map((s, i) => ({
+    key: s.key,
+    label: s.label,
+    color: seriesColor(s.label, i),
+    points: d.points.flatMap((p) => (typeof p[s.key] === 'number' ? [[p.t, p[s.key] as number] as [number, number]] : [])),
+  }))
+}
+
+function liveFromAgents(d: AgentSeriesResult): LiveSeries[] {
+  return d.agents.map((a, i) => ({ key: a.key, label: a.label, color: PALETTE[i % 8], points: a.points }))
+}
+
 export default function Analytics() {
-  const { from, to } = useRange()
+  const range = useRange()
+  const [live, setLiveState] = useState<LiveState>(loadLive)
+  const setLive = (v: LiveState) => {
+    setLiveState(v)
+    try {
+      localStorage.setItem(LIVE_KEY, JSON.stringify(v))
+    } catch {
+      /* ignore */
+    }
+  }
+  const liveMs = LIVE_WINDOWS.find((w) => w.key === live.window)!.ms
+  // Live: a window ending now, re-anchored every 10 s (ending 20 s ahead, so data recorded in between is included when a
+  // usage push triggers a refetch); the charts scroll on their own in between.
+  const anchor = Math.floor(useNow(10_000) / 10_000) * 10_000
+  const { from, to } = live.on ? { from: anchor - liveMs - 10_000, to: anchor + 20_000 } : range
+  const lt = live.on ? (['usage'] as LiveTopic[]) : undefined
   const [metric, setMetric] = useState('cost')
   const [groupBy, setGroupBy] = useState('model')
   const [bucket, setBucket] = useState('auto')
@@ -64,19 +110,33 @@ export default function Analytics() {
   const perAgent = groupBy === 'agentId' && !!def.perRequest
 
   const accounts = useApi<Account[]>('/api/accounts', undefined, ['accounts'])
-  const models = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, by: 'model', limit: 100 })}`)
-  const agents = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, by: 'agent', limit: 100 })}`)
-  const modes = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, by: 'speedMode', limit: 20 })}`)
-  const summary = useApi<Summary>(`/api/analytics/summary${qs(base)}`)
-  const ts = useApi<Timeseries>(perAgent ? null : `/api/analytics/timeseries${qs({ ...base, metric, groupBy, bucket, limit: 8 })}`)
+  const bucketQ = live.on ? '1s' : bucket
+  const models = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, by: 'model', limit: 100 })}`, undefined, lt)
+  const agents = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, by: 'agent', limit: 100 })}`, undefined, lt)
+  const modes = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, by: 'speedMode', limit: 20 })}`, undefined, lt)
+  const summary = useApi<Summary>(`/api/analytics/summary${qs(base)}`, undefined, lt)
+  const ts = useApi<Timeseries>(
+    perAgent ? null : `/api/analytics/timeseries${qs({ ...base, metric, groupBy, bucket: bucketQ, limit: 8 })}`,
+    undefined,
+    lt,
+  )
   const agentSeries = useApi<AgentSeriesResult>(
     perAgent ? `/api/analytics/agent-series${qs({ ...base, metric, cumulative: def.kind === 'sum' && cumulative, limit: 12 })}` : null,
+    undefined,
+    lt,
   )
-  const breakdown = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ ...base, by, limit: 100 })}`)
+  const breakdown = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ ...base, by, limit: 100 })}`, undefined, lt)
   const tpsOverTime = useApi<Timeseries>(
-    `/api/analytics/timeseries${qs({ ...base, metric: tpsStat, groupBy: 'modelMode', bucket, limit: 8 })}`,
+    `/api/analytics/timeseries${qs({ ...base, metric: tpsStat, groupBy: 'modelMode', bucket: bucketQ, limit: 8 })}`,
+    undefined,
+    lt,
   )
-  const tpsByModelMode = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ ...base, by: 'modelMode', limit: 100 })}`)
+  const tpsByModelMode = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ ...base, by: 'modelMode', limit: 100 })}`, undefined, lt)
+  const mainLive = useMemo(
+    () => (perAgent ? (agentSeries.data ? liveFromAgents(agentSeries.data) : []) : ts.data ? liveFromTimeseries(ts.data) : []),
+    [perAgent, agentSeries.data, ts.data],
+  )
+  const tpsLive = useMemo(() => (tpsOverTime.data ? liveFromTimeseries(tpsOverTime.data) : []), [tpsOverTime.data])
 
   const set = (k: keyof Filters, v: string) => setF((p) => ({ ...p, [k]: v }))
   const active = Object.values(f).some(Boolean)
@@ -104,7 +164,21 @@ export default function Analytics() {
   return (
     <>
       <PageHead title="Analytics">
-        <RangePicker />
+        <label className="live-toggle" title="Charts scroll in real time at one-second resolution over a rolling window">
+          <input type="checkbox" checked={live.on} onChange={(e) => setLive({ ...live, on: e.target.checked })} />
+          Live
+        </label>
+        {live.on ? (
+          <div className="seg" role="group" aria-label="Live window">
+            {LIVE_WINDOWS.map((w) => (
+              <button key={w.key} className={live.window === w.key ? 'on' : ''} onClick={() => setLive({ ...live, window: w.key })}>
+                Last {w.key}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <RangePicker />
+        )}
       </PageHead>
 
       <div className="filters">
@@ -245,7 +319,7 @@ export default function Analytics() {
               )
             ) : (
               <>
-                <label>
+                {!live.on && <label>
                   Bucket
                   <select value={bucket} onChange={(e) => setBucket(e.target.value)}>
                     {BUCKETS.map((b) => (
@@ -254,7 +328,7 @@ export default function Analytics() {
                       </option>
                     ))}
                   </select>
-                </label>
+                </label>}
                 <div className="seg" role="group" aria-label="Chart type">
                   {(['auto', 'stack', 'line'] as const).map((m) => (
                     <button key={m} className={chartMode === m ? 'on' : ''} onClick={() => setChartMode(m)}>
@@ -267,7 +341,17 @@ export default function Analytics() {
           </div>
         }
       >
-        {perAgent ? (
+        {live.on ? (
+          <LiveChart
+            series={mainLive}
+            bucketMs={perAgent ? null : 1000}
+            mode={perAgent ? 'line' : mode}
+            windowMs={liveMs}
+            format={def.format}
+            axisFormat={def.format === fmtTps ? fmtCompact : def.format}
+            height={320}
+          />
+        ) : perAgent ? (
           <Async state={agentSeries}>
             {(d) => (
               <AgentChart data={d} format={def.format} axisFormat={def.format === fmtTps ? fmtCompact : def.format} height={320} sessionScoped={!!f.sessionId} />
@@ -293,7 +377,11 @@ export default function Analytics() {
             </div>
           }
         >
-          <Async state={tpsOverTime}>{(d) => <TimeChart data={d} mode="line" format={fmtTps} axisFormat={fmtCompact} height={260} />}</Async>
+          {live.on ? (
+            <LiveChart series={tpsLive} bucketMs={1000} mode="line" windowMs={liveMs} format={fmtTps} axisFormat={fmtCompact} height={260} />
+          ) : (
+            <Async state={tpsOverTime}>{(d) => <TimeChart data={d} mode="line" format={fmtTps} axisFormat={fmtCompact} height={260} />}</Async>
+          )}
         </Panel>
         <Panel title={`Output speed by model and mode (${TPS_STATS.find((s) => s.key === tpsStat)?.label})`}>
           <Async state={tpsByModelMode}>{(d) => <ModeComparisonChart rows={d.rows} stat={tpsStat} format={fmtTps} />}</Async>

@@ -158,7 +158,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
 
     private static readonly (string Name, long Ms)[] Buckets =
     [
-        ("5s", 5_000), ("15s", 15_000), ("30s", 30_000), ("minute", 60_000), ("5min", 300_000), ("15min", 900_000), ("hour", 3_600_000), ("6hour", 21_600_000), ("day", 86_400_000),
+        ("1s", 1_000), ("5s", 5_000), ("15s", 15_000), ("30s", 30_000), ("minute", 60_000), ("5min", 300_000), ("15min", 900_000), ("hour", 3_600_000), ("6hour", 21_600_000), ("day", 86_400_000),
     ];
 
     public static string AgentKindSql(string p = "") => $"({p}client || ':' || COALESCE({p}agent_role, 'none'))";
@@ -180,6 +180,9 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         _ => null,
     };
 
+    /// <summary>Most buckets one timeseries may span (e.g. 1s buckets over a month would be millions of points).</summary>
+    public const int MaxBuckets = 20_000;
+
     public static (string Name, long Ms)? ResolveBucket(string? name, long from, long to)
     {
         if (string.IsNullOrEmpty(name) || name == "auto")
@@ -188,7 +191,8 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
                 if ((to - from) / b.Ms <= 240) return b;
             return Buckets[^1];
         }
-        foreach (var b in Buckets) if (b.Name == name) return b;
+        foreach (var b in Buckets)
+            if (b.Name == name) return (to - from) / b.Ms <= MaxBuckets ? b : null;
         return null;
     }
 

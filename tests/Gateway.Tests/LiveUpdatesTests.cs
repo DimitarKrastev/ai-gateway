@@ -102,6 +102,21 @@ public class LiveUpdatesTests
     }
 
     [Fact]
+    public async Task One_second_buckets_serve_live_windows_and_huge_bucket_counts_are_refused()
+    {
+        using var gw = new GatewayFactory();
+        var admin = await gw.CreateLoggedInClientAsync();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        var live = await admin.GetFromJsonAsync<JsonElement>($"/api/analytics/timeseries?metric=requests&bucket=1s&from={now - 60_000}&to={now}");
+        Assert.Equal(1000, live.GetProperty("bucketMs").GetInt64());
+        Assert.InRange(live.GetProperty("points").GetArrayLength(), 60, 61);
+
+        var month = await admin.GetAsync($"/api/analytics/timeseries?metric=requests&bucket=1s&from={now - 30L * 86_400_000}&to={now}");
+        Assert.Equal(HttpStatusCode.BadRequest, month.StatusCode);
+    }
+
+    [Fact]
     public async Task Hub_requires_admin_login()
     {
         await using var fake = await FakeProviderServer.StartInMemoryAsync(o => o.AutoRegister = false);

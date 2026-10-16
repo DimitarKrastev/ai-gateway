@@ -35,10 +35,10 @@ public static class AnalyticsEndpoints
                 ? Results.Ok(result)
                 : Results.BadRequest(new
                 {
-                    error = "Unknown metric, groupBy or bucket.",
+                    error = $"Unknown metric, groupBy or bucket, or more than {AnalyticsService.MaxBuckets} buckets (pick a larger bucket).",
                     metrics = AnalyticsService.MetricNames,
                     groupBy = AnalyticsService.GroupNames,
-                    buckets = new[] { "auto", "5s", "15s", "30s", "minute", "5min", "15min", "hour", "6hour", "day" },
+                    buckets = new[] { "auto", "1s", "5s", "15s", "30s", "minute", "5min", "15min", "hour", "6hour", "day" },
                 });
         });
 

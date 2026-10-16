@@ -1,0 +1,211 @@
+import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useNow } from '../hooks'
+import { useMeter } from '../liveContext'
+import { LIVE_WINDOWS, type LiveSeries } from '../liveWindows'
+
+/** Data for a second is complete just after it ends; drawing one second behind lets bars slide in from the right edge. */
+const DELAY_MS = 1000
+
+function niceMax(v: number) {
+  if (v <= 0) return 1
+  const p = 10 ** Math.floor(Math.log10(v))
+  return ([1, 2, 2.5, 5, 10].find((m) => m * p >= v) ?? 10) * p
+}
+
+const f1 = (n: number) => n.toFixed(1)
+
+/**
+ * A scrolling real-time chart (like a network traffic meter): geometry is rebuilt when data arrives (about once a
+ * second) and only translated in between, every animation frame.
+ * - `bucketMs` set: per-bucket values; `stack` draws stacked step areas (missing buckets are 0), `line` step lines with gaps.
+ * - `bucketMs` null: per-request values (e.g. one series per agent), each held until the series' next point.
+ */
+export default function LiveChart({
+  series,
+  bucketMs,
+  mode,
+  windowMs,
+  format,
+  axisFormat = format,
+  height = 300,
+  emptyText = 'Waiting for traffic…',
+}: {
+  series: LiveSeries[]
+  bucketMs: number | null
+  mode: 'stack' | 'line'
+  windowMs: number
+  format: (v: number) => string
+  axisFormat?: (v: number) => string
+  height?: number
+  emptyText?: string
+}) {
+  const { skew } = useMeter()
+  const now = useNow(1000) - skew
+  const [hidden, setHidden] = useState<Set<string>>(new Set())
+  const visible = useMemo(() => series.filter((s) => !hidden.has(s.key)), [series, hidden])
+  const clipId = `live-clip-${useId().replace(/:/g, '')}`
+
+  const boxRef = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(0)
+  useLayoutEffect(() => {
+    const el = boxRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setWidth(Math.floor(el.clientWidth)))
+    ro.observe(el)
+    setWidth(Math.floor(el.clientWidth))
+    return () => ro.disconnect()
+  }, [])
+
+  const plotH = height - 6
+  const build = useMemo(() => {
+    const viewStart = now - DELAY_MS - windowMs
+    const k = width > 0 ? width / windowMs : 0
+    const x = (t: number) => (t - viewStart) * k
+    const from = viewStart - 2 * (bucketMs ?? 1000)
+    const paths: Array<{ key: string; color: string; area?: string; line: string }> = []
+    let max = 0
+
+    if (bucketMs !== null && mode === 'stack') {
+      // Stacked step bands over a common bucket grid.
+      const start = Math.floor(from / bucketMs) * bucketMs
+      const last = Math.max(start, ...visible.map((s) => (s.points.length ? s.points[s.points.length - 1][0] : start)))
+      const grid: number[] = []
+      for (let t = start; t <= last; t += bucketMs) grid.push(t)
+      const lower = grid.map(() => 0)
+      const bands = visible.map((s) => {
+        const byT = new Map(s.points)
+        const upper = grid.map((t, i) => lower[i] + (byT.get(t) ?? 0))
+        const band = { s, lo: [...lower], hi: upper }
+        upper.forEach((v, i) => (lower[i] = v))
+        return band
+      })
+      grid.forEach((t, i) => {
+        if (t + bucketMs >= viewStart) max = Math.max(max, lower[i])
+      })
+      const top = niceMax(max * 1.1)
+      const y = (v: number) => plotH - (v / top) * (plotH - 4)
+      for (const b of bands) {
+        let up = ''
+        let down = ''
+        grid.forEach((t, i) => {
+          up += `${i === 0 ? 'M' : 'L'}${f1(x(t))},${f1(y(b.hi[i]))}L${f1(x(t + bucketMs))},${f1(y(b.hi[i]))}`
+        })
+        for (let i = grid.length - 1; i >= 0; i--) {
+          down += `L${f1(x(grid[i] + bucketMs))},${f1(y(b.lo[i]))}L${f1(x(grid[i]))},${f1(y(b.lo[i]))}`
+        }
+        paths.push({ key: b.s.key, color: b.s.color, area: up + down + 'Z', line: up })
+      }
+      return { builtAt: now, k, top, paths }
+    }
+
+    // Lines: per bucket (gaps where a bucket has no value) or per request (held until the next point).
+    for (const s of visible) {
+      let d = ''
+      let prevEnd: number | null = null
+      s.points.forEach(([t, v], i) => {
+        const next = s.points[i + 1]
+        const end = bucketMs !== null ? t + bucketMs : next ? next[0] : Math.max(t + 1000, now - DELAY_MS)
+        if (end < from) return
+        if (end >= viewStart) max = Math.max(max, v)
+        const continuous = prevEnd !== null && Math.abs(prevEnd - t) < 1
+        d += `${continuous ? 'L' : 'M'}${f1(x(t))},§${v}§L${f1(x(end))},§${v}§`
+        prevEnd = end
+      })
+      paths.push({ key: s.key, color: s.color, line: d })
+    }
+    const top = niceMax(max * 1.1)
+    const y = (v: number) => plotH - (v / top) * (plotH - 4)
+    for (const p of paths) p.line = p.line.replace(/§([-\d.e+]+)§/g, (_, v: string) => f1(y(Number(v))))
+    return { builtAt: now, k, top, paths }
+  }, [visible, bucketMs, mode, windowMs, width, now, plotH])
+
+  // Offset applied before paint, then every frame (see LiveThroughput for why it must not wait for a normal effect).
+  const groupRef = useRef<SVGGElement>(null)
+  useLayoutEffect(() => {
+    const apply = () => groupRef.current?.setAttribute('transform', `translate(${(-(Date.now() - skew - build.builtAt) * build.k).toFixed(2)},0)`)
+    apply()
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    let raf = 0
+    const frame = () => {
+      apply()
+      raf = requestAnimationFrame(frame)
+    }
+    raf = requestAnimationFrame(frame)
+    return () => cancelAnimationFrame(raf)
+  }, [build, skew])
+
+  // Legend values: the latest bucket (bucketed) or each series' latest request (per request).
+  const latest = (s: LiveSeries) => {
+    const last = s.points[s.points.length - 1]
+    if (!last) return null
+    if (bucketMs !== null && last[0] + bucketMs < now - DELAY_MS - 2 * bucketMs) return mode === 'stack' ? 0 : null
+    return last[1]
+  }
+  const toggle = (key: string) =>
+    setHidden((h) => {
+      const n = new Set(h)
+      if (n.has(key)) n.delete(key)
+      else n.add(key)
+      return n
+    })
+
+  const empty = series.every((s) => s.points.length === 0)
+  const y = (v: number) => plotH - (v / build.top) * (plotH - 4)
+  return (
+    <div className="live-chart">
+      <div ref={boxRef} className="live-chart-plot" style={{ height }}>
+        {width > 0 && (
+          <svg width={width} height={height} role="img" aria-label="Live chart">
+            <defs>
+              <clipPath id={clipId}>
+                <rect x={0} y={0} width={width} height={height} />
+              </clipPath>
+            </defs>
+            {[0.5, 1].map((fr) => (
+              <line key={fr} className="tp-grid" x1={0} x2={width} y1={y(build.top * fr)} y2={y(build.top * fr)} />
+            ))}
+            <line className="tp-axis" x1={0} x2={width} y1={plotH + 0.5} y2={plotH + 0.5} />
+            <g clipPath={`url(#${clipId})`}>
+              <g ref={groupRef}>
+                {build.paths.map((p) => (
+                  <g key={p.key}>
+                    {p.area && <path d={p.area} fill={p.color} fillOpacity={0.18} />}
+                    <path d={p.line} fill="none" stroke={p.color} strokeWidth={1.5} strokeLinejoin="round" />
+                  </g>
+                ))}
+              </g>
+            </g>
+            <text className="tp-max" x={4} y={12}>
+              {axisFormat(build.top)}
+            </text>
+            {empty && (
+              <text className="live-chart-empty" x={width / 2} y={height / 2} textAnchor="middle">
+                {emptyText}
+              </text>
+            )}
+          </svg>
+        )}
+      </div>
+      <div className="tp-axis-labels muted">
+        <span>−{LIVE_WINDOWS.find((w) => w.ms === windowMs)?.key ?? `${windowMs / 1000}s`}</span>
+        <span>now</span>
+      </div>
+      {series.length > 0 && (
+        <ul className="live-legend">
+          {series.map((s) => {
+            const v = latest(s)
+            return (
+              <li key={s.key}>
+                <button className={hidden.has(s.key) ? 'off' : ''} onClick={() => toggle(s.key)} aria-pressed={!hidden.has(s.key)}>
+                  <span className="swatch" style={{ background: s.color }} aria-hidden="true" />
+                  <span className="name">{s.label}</span>
+                  <span className="value">{v === null ? '—' : format(v)}</span>
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
+}

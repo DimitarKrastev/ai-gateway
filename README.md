@@ -306,6 +306,10 @@ Notes:
   streams (streamed text ÷ 4); when the request completes, output that was not streamed (hidden reasoning, estimate
   error) is spread over its generation time and prompt tokens are placed at the second the request was sent, and the
   corrected seconds are pushed again. It is kept in memory only (`GET /api/analytics/meter`).
+  The **Analytics** page has a **Live** checkbox: every chart (any metric, any grouping, including one line per agent
+  instance) then scrolls in real time at one-second resolution over the last 1, 5 or 10 minutes, and the KPIs and
+  breakdown follow the same window. These values come from completed requests (a long request appears when it ends);
+  the Overview's throughput panel is the token-by-token view. Timeseries queries are limited to 20,000 buckets.
   For second-level detail pick the **5m** or **15m** range (auto bucket 5 s; **1h** gets 15 s) or a 5s/15s/30s bucket on
   the Analytics page.
 
