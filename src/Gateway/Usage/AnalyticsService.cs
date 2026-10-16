@@ -451,7 +451,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
                    (SELECT account_id FROM requests x WHERE x.provider = requests.provider AND x.session_id = requests.session_id
                     ORDER BY x.started_at DESC LIMIT 1),
                    MAX(client), MAX(model), COUNT(*) OVER ()
-            FROM requests WHERE {where}
+            FROM requests WHERE {where} AND session_id IS NOT NULL
             GROUP BY provider, session_id ORDER BY MAX(completed_at) DESC LIMIT $limit OFFSET $offset;
             """;
         cmd.Parameters.AddWithValue("$limit", limit);

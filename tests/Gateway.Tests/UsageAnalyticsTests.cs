@@ -404,7 +404,7 @@ public class UsageAnalyticsTests
 
         var all = await Get(admin, "/api/analytics/summary");
         Assert.Equal(6, all.GetProperty("requests").GetInt64());
-        Assert.Equal(4, all.GetProperty("sessions").GetInt64()); // 2 Claude sessions, codex-1 + the derived session of count_tokens
+        Assert.Equal(3, all.GetProperty("sessions").GetInt64()); // 2 Claude sessions + codex-1; count_tokens forms no session
 
         var openai = await Get(admin, "/api/analytics/summary?provider=openai");
         Assert.Equal(2, openai.GetProperty("requests").GetInt64());
@@ -440,7 +440,7 @@ public class UsageAnalyticsTests
         Assert.Equal(JsonValueKind.Null, next.GetProperty("nextBefore").ValueKind);
 
         var sessions = await Get(admin, "/api/analytics/sessions?provider=anthropic&limit=1");
-        Assert.Equal(3, sessions.GetProperty("total").GetInt64());
+        Assert.Equal(2, sessions.GetProperty("total").GetInt64()); // ant-session-0/1; count_tokens forms no session
         Assert.Equal("Work Claude", sessions.GetProperty("items")[0].GetProperty("accountName").GetString());
 
         Assert.Equal(HttpStatusCode.BadRequest, (await admin.GetAsync("/api/analytics/timeseries?metric=bogus")).StatusCode);

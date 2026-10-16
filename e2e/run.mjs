@@ -329,6 +329,7 @@ async function main() {
     const s = await admin('GET', `/api/analytics/summary?${from}&provider=${provider}`);
     const t = tally[provider];
     for (const k of ['requests', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'toolCalls']) eq(`${provider} ${k} matches fake-reported`, s[k], t[k]);
+    eq(`${provider} sessions`, s.sessions, provider === 'anthropic' ? 3 : 2);
     check(`${provider} cost > 0`, s.costUsd > 0, `$${s.costUsd?.toFixed(4)}`);
     check(`${provider} cache reads observed`, s.cacheReadTokens > 0, `${s.cacheReadTokens}`);
     check(`${provider} context size recorded`, s.maxContextTokens > 0, `max ${s.maxContextTokens}`);

@@ -110,7 +110,11 @@ public sealed class UsageObserver(
             store.Insert(new RequestRecord
             {
                 RequestId = ctx.RequestId, Attempt = ctx.Attempt, Retried = ctx.RetriedByGateway, Provider = ctx.Provider,
-                AccountId = ctx.Account.Id, AccountKind = ctx.Account.Kind, SessionId = ctx.SessionId, SessionSource = ctx.SessionSource,
+                AccountId = ctx.Account.Id, AccountKind = ctx.Account.Kind,
+                // count_tokens/models calls carry no session marker (Claude Code sends no metadata there); a derived id would
+                // show up as a phantom session, so such rows are kept out of session analytics.
+                SessionId = Endpoints.IsGeneration(info.Endpoint) || ctx.SessionSource != "derived" ? ctx.SessionId : null,
+                SessionSource = ctx.SessionSource,
                 ClientKeyId = ctx.ClientKeyId, Client = info.Client, ClientVersion = info.ClientVersion,
                 AgentId = agent?.Id, AgentRole = agent?.Role, Method = ctx.Method, Path = ctx.Path, Endpoint = info.Endpoint,
                 Model = model, Stream = info.Stream || (ctx.ResponseContentType?.Contains("event-stream") ?? false),

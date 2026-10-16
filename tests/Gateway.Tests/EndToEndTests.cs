@@ -48,6 +48,11 @@ public class EndToEndTests
             metadata = new { user_id = $"user_x_account_y_session_{ccSession}" },
         };
         var first = new { role = "user", content = new object[] { new { type = "text", text = "run tests", cache_control = new { type = "ephemeral" } } } };
+        // Claude Code's count_tokens carries no session metadata: logged as a request, but must not become a session of its own.
+        var count = await client.SendAsync(Anthropic(key, new { model = "claude-sonnet-4-5-20250929", messages = new[] { first } },
+            path: "/anthropic/v1/messages/count_tokens?beta=true", bearer: true));
+        Assert.Equal(HttpStatusCode.OK, count.StatusCode);
+        claudeTotals.Add(new Totals(1, 0, 0, 0, 0, 0));
         var (t1, toolId) = await SendClaude(client, key, CcBody(first));
         claudeTotals.Add(t1);
         Assert.NotNull(toolId);
@@ -87,6 +92,7 @@ public class EndToEndTests
 
         var sessions = (await admin.GetFromJsonAsync<JsonElement>("/api/analytics/sessions")).GetProperty("items").EnumerateArray()
             .ToDictionary(x => x.GetProperty("sessionId").GetString()!, x => x);
+        Assert.Equal(2, sessions.Count);
         Assert.Equal("claude-code", sessions[ccSession].GetProperty("client").GetString());
         Assert.Equal("codex", sessions[cxSession].GetProperty("client").GetString());
         Assert.Equal("Claude", sessions[ccSession].GetProperty("accountName").GetString());
