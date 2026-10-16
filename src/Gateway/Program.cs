@@ -1,0 +1,69 @@
+using Gateway.Auth;
+using Gateway.Infrastructure;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.FileProviders;
+
+var builder = WebApplication.CreateBuilder(args);
+
+var options = GatewayOptions.FromConfiguration(builder.Configuration, builder.Environment.ContentRootPath);
+Directory.CreateDirectory(options.DataDir);
+builder.WebHost.UseUrls($"http://{options.BindAddress}:{options.Port}");
+
+builder.Services.AddSingleton(options);
+builder.Services.AddSingleton<Database>();
+builder.Services.AddSingleton<AdminCredentials>();
+
+builder.Services.AddDataProtection()
+    .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(options.DataDir, "keys")))
+    .SetApplicationName("AiGateway");
+
+builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddCookie(o =>
+    {
+        o.Cookie.Name = "aigw_session";
+        o.Cookie.HttpOnly = true;
+        o.Cookie.SameSite = SameSiteMode.Strict;
+        o.ExpireTimeSpan = TimeSpan.FromDays(14);
+        o.SlidingExpiration = true;
+        o.Events.OnRedirectToLogin = ctx => { ctx.Response.StatusCode = StatusCodes.Status401Unauthorized; return Task.CompletedTask; };
+        o.Events.OnRedirectToAccessDenied = ctx => { ctx.Response.StatusCode = StatusCodes.Status403Forbidden; return Task.CompletedTask; };
+    });
+builder.Services.AddAuthorization();
+
+var app = builder.Build();
+
+app.Services.GetRequiredService<Database>().Migrate();
+app.Services.GetRequiredService<AdminCredentials>();
+
+app.UseAuthentication();
+app.UseApiLoginRequirement();
+app.UseAuthorization();
+
+var webFiles = Directory.Exists(options.WebRoot)
+    ? (IFileProvider)new PhysicalFileProvider(options.WebRoot)
+    : new NullFileProvider();
+app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = webFiles });
+app.UseStaticFiles(new StaticFileOptions { FileProvider = webFiles });
+
+app.MapGet("/api/health", () => Results.Ok(new { status = "ok", time = DateTimeOffset.UtcNow }));
+app.MapAuthEndpoints();
+
+// SPA fallback for client-side routes; API and proxy prefixes never fall back to the UI.
+app.MapFallback(async ctx =>
+{
+    var path = ctx.Request.Path;
+    var index = webFiles.GetFileInfo("index.html");
+    if (path.StartsWithSegments("/api") || path.StartsWithSegments("/anthropic") || path.StartsWithSegments("/openai")
+        || !HttpMethods.IsGet(ctx.Request.Method) || !index.Exists)
+    {
+        ctx.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+    ctx.Response.ContentType = "text/html; charset=utf-8";
+    await ctx.Response.SendFileAsync(index);
+});
+
+app.Run();
+
+public partial class Program;

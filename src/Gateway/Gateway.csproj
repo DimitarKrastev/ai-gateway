@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <WebDir>$(MSBuildProjectDirectory)/../../web</WebDir>
+    <WebOutDir>$(MSBuildProjectDirectory)/wwwroot</WebOutDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.3" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.14" />
+  </ItemGroup>
+
+  <!--
+    The React UI (../../web) is built into wwwroot (gitignored) as part of the .NET build.
+    Incremental: skipped when wwwroot/index.html is newer than every web source file.
+    Pass -p:SkipWebBuild=true to skip it entirely.
+  -->
+  <ItemGroup>
+    <WebSource Include="$(WebDir)/src/**/*;$(WebDir)/public/**/*;$(WebDir)/index.html;$(WebDir)/package.json;$(WebDir)/package-lock.json;$(WebDir)/vite.config.ts;$(WebDir)/tsconfig*.json" />
+  </ItemGroup>
+
+  <Target Name="NpmInstall" Condition="'$(SkipWebBuild)' != 'true' And !Exists('$(WebDir)/node_modules/.package-lock.json')" BeforeTargets="BuildWeb">
+    <Exec Command="npm ci --no-audit --no-fund" WorkingDirectory="$(WebDir)" />
+  </Target>
+
+  <Target Name="BuildWeb" Condition="'$(SkipWebBuild)' != 'true'" BeforeTargets="AssignTargetPaths" Inputs="@(WebSource)" Outputs="$(WebOutDir)/index.html">
+    <Exec Command="npm run build" WorkingDirectory="$(WebDir)" />
+  </Target>
+
+  <!-- Files produced during this build did not exist at evaluation time; add them so publish copies them. -->
+  <Target Name="IncludeWebAssets" AfterTargets="BuildWeb" BeforeTargets="AssignTargetPaths">
+    <ItemGroup>
+      <Content Remove="wwwroot/**" />
+      <Content Include="wwwroot/**" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
+
+</Project>

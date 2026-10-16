@@ -1,0 +1,16 @@
+bin/
+obj/
+node_modules/
+data/
+dist/
+publish/
+src/Gateway/wwwroot/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+*.user
+.vs/
+.idea/
+TestResults/
+web/node_modules/.tmp/
