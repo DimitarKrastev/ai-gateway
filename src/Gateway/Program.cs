@@ -1,5 +1,6 @@
 using Gateway.Accounts;
 using Gateway.Auth;
+using Gateway.Bridge;
 using Gateway.ClientKeys;
 using Gateway.Infrastructure;
 using Gateway.Limits;
@@ -24,6 +25,7 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddGatewayProxy();
 builder.Services.AddUsageAnalytics();
 builder.Services.AddLimitsAndRouting();
+builder.Services.AddBridge();
 
 builder.Services.AddDataProtection()
     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(options.DataDir, "keys")))
@@ -62,6 +64,7 @@ app.MapAuthEndpoints();
 app.MapAccountEndpoints();
 app.MapClientKeyEndpoints();
 app.MapProxyEndpoints();
+app.MapBridgeEndpoints();
 app.MapAnalyticsEndpoints();
 app.MapLimitsEndpoints();
 

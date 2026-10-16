@@ -271,3 +271,38 @@ export type Live = {
   sessionsLast5Min: number
   requests: LiveRequest[]
 }
+
+export type BridgeModelAccount = { id: number; name: string; kind: AccountKind; enabled: boolean; source: 'api' | 'chatgpt'; lastSeenAt: Time }
+
+export type BridgeCatalogEntry = {
+  modelId: string
+  displayName: string
+  description: string | null
+  sources: ('api' | 'chatgpt' | 'manual')[]
+  accounts: BridgeModelAccount[]
+  efforts: string[]
+  defaultEffort: string | null
+  manual: boolean
+  firstSeenAt: Time
+  lastSeenAt: Time
+  available: boolean
+  exposed: boolean
+  advertisedId: string
+  advertisedName: string
+  advertisedDescription: string
+  defaultAdvertisedId: string
+  defaultAdvertisedName: string
+  defaultAdvertisedDescription: string
+}
+
+export type BridgeRefreshResult = { accountId: number; accountName: string; kind: AccountKind; ok: boolean; models: number; error: string | null }
+
+export type BridgeCatalog = {
+  models: BridgeCatalogEntry[]
+  openaiAccounts: { id: number; name: string; kind: AccountKind; enabled: boolean }[]
+  anthropicAccounts: number
+  lastRefreshAt: Time
+  refreshResults: BridgeRefreshResult[] | null
+}
+
+export type BridgeValidationError = { modelId: string; field: string; message: string }

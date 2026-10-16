@@ -21,7 +21,26 @@ public sealed class FakeOptions
     public double FastSpeedFactor { get; set; } = 2.5;
     /// <summary>Speed multiplier for OpenAI <c>service_tier: "flex"</c>.</summary>
     public double FlexSpeedFactor { get; set; } = 0.5;
+    /// <summary>Model ids listed by the OpenAI API <c>GET /v1/models</c> (includes non-chat models, like the real list).</summary>
+    public List<string> OpenAIApiModels { get; set; } =
+    [
+        "gpt-5", "gpt-5-codex", "gpt-5-mini", "gpt-5-nano", "o4-mini", "gpt-4.1", "gpt-4o-realtime-preview", "gpt-4o-mini-tts",
+        "gpt-4o-transcribe", "gpt-image-1", "text-embedding-3-small", "tts-1", "whisper-1", "dall-e-3", "omni-moderation-latest",
+        "gpt-4o-search-preview", "davinci-002",
+    ];
+    /// <summary>Models listed by the ChatGPT Codex backend <c>GET /backend-api/codex/models</c>.</summary>
+    public List<FakeCodexModel> CodexModels { get; set; } =
+    [
+        new("gpt-5-codex", "gpt-5-codex", "Optimized for agentic coding.", ["low", "medium", "high"], "medium"),
+        new("gpt-5", "gpt-5", "Broad world knowledge with strong general reasoning.", ["minimal", "low", "medium", "high"], "medium"),
+        new("gpt-5.1-codex-max", "gpt-5.1-codex-max", "Codex-optimized flagship for deep and fast reasoning.", ["low", "medium", "high", "xhigh"], "medium"),
+        new("codex-auto-review", "codex-auto-review", "Internal review model.", ["medium"], "medium", Visibility: "hide"),
+    ];
 }
+
+/// <summary>One entry of the fake Codex backend model list (mirrors codex-rs <c>ModelInfo</c>).</summary>
+public sealed record FakeCodexModel(
+    string Slug, string DisplayName, string Description, string[] Efforts, string DefaultEffort, string Visibility = "list", int Priority = 0);
 
 public enum FakeAuthKind { ApiKey, OAuth }
 

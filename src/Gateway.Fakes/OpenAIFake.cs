@@ -445,11 +445,44 @@ public static class OpenAIFake
         await ctx.Response.WriteAsJsonAsync(new { redeemed = id, usage = UsageBody(state, acct) });
     }
 
+    /// <summary>
+    /// <c>GET /backend-api/codex/models?client_version=X</c> — the model list the Codex CLI shows to ChatGPT users
+    /// (<c>{models:[ModelInfo]}</c>). Like the real backend it needs <c>client_version</c>.
+    /// </summary>
     private static async Task CodexModels(HttpContext ctx)
     {
         var state = State(ctx);
         if (await AuthenticateAsync(ctx, state, chatgpt: true) == null) return;
-        await ctx.Response.WriteAsJsonAsync(new { models = new[] { new { slug = "gpt-5-codex", display_name = "gpt-5-codex" }, new { slug = "gpt-5", display_name = "gpt-5" } } });
+        if (string.IsNullOrEmpty(ctx.Request.Query["client_version"]))
+        {
+            await ErrorAsync(ctx, 400, "Missing required query parameter: client_version", "invalid_request_error", "missing_client_version");
+            return;
+        }
+        await ctx.Response.WriteAsJsonAsync(new
+        {
+            models = state.Options.CodexModels.Select((m, i) => new
+            {
+                slug = m.Slug,
+                display_name = m.DisplayName,
+                description = m.Description,
+                default_reasoning_level = m.DefaultEffort,
+                supported_reasoning_levels = m.Efforts.Select(e => new { effort = e, description = $"{e} reasoning effort" }),
+                shell_type = "shell_command",
+                visibility = m.Visibility,
+                supported_in_api = true,
+                priority = m.Priority == 0 ? i + 1 : m.Priority,
+                upgrade = (string?)null,
+                base_instructions = "You are Codex, based on GPT-5.",
+                supports_reasoning_summaries = true,
+                support_verbosity = false,
+                default_verbosity = (string?)null,
+                apply_patch_tool_type = "freeform",
+                truncation_policy = new { mode = "tokens", limit = 10000 },
+                supports_parallel_tool_calls = true,
+                context_window = 272000,
+                experimental_supported_tools = Array.Empty<string>(),
+            }),
+        });
     }
 
     internal static async Task ApiModels(HttpContext ctx)
@@ -460,7 +493,7 @@ public static class OpenAIFake
         await ctx.Response.WriteAsJsonAsync(new
         {
             @object = "list",
-            data = new[] { "gpt-5-codex", "gpt-5", "gpt-5-mini" }.Select(m => new { id = m, @object = "model", created, owned_by = "openai" }),
+            data = state.Options.OpenAIApiModels.Select(m => new { id = m, @object = "model", created, owned_by = m.StartsWith("gpt") || m.StartsWith('o') ? "openai" : "system" }),
         });
     }
 

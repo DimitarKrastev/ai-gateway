@@ -8,7 +8,9 @@ namespace Gateway.Tests;
 public class GatewayFactory : WebApplicationFactory<Program>
 {
     public const string AdminPassword = "test-admin-password";
-    public string DataDir { get; } = Path.Combine(Path.GetTempPath(), "aigw-tests", Guid.NewGuid().ToString("N"));
+    public string DataDir { get; init; } = Path.Combine(Path.GetTempPath(), "aigw-tests", Guid.NewGuid().ToString("N"));
+    /// <summary>Keep the data dir on dispose (to start a second gateway on the same data, i.e. a restart).</summary>
+    public bool KeepDataDir { get; init; }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -29,6 +31,7 @@ public class GatewayFactory : WebApplicationFactory<Program>
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
+        if (KeepDataDir) return;
         try { Directory.Delete(DataDir, recursive: true); } catch { /* best effort */ }
     }
 }

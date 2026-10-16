@@ -6,6 +6,7 @@ import { RangeProvider } from './range'
 import Accounts from './pages/Accounts'
 import Analytics from './pages/Analytics'
 import Login from './pages/Login'
+import OpenAIModels from './pages/OpenAIModels'
 import Overview from './pages/Overview'
 import Requests from './pages/Requests'
 import SessionDetail from './pages/SessionDetail'
@@ -36,6 +37,7 @@ export default function App() {
             <Route index element={<Overview />} />
             <Route path="analytics" element={<Analytics />} />
             <Route path="accounts" element={<Accounts />} />
+            <Route path="openai-models" element={<OpenAIModels />} />
             <Route path="sessions" element={<Sessions />} />
             <Route path="sessions/:provider/:sessionId" element={<SessionDetail />} />
             <Route path="requests" element={<Requests />} />
