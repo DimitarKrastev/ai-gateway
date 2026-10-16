@@ -1,5 +1,5 @@
-using Gateway.Infrastructure;
 using System.Text;
+using Gateway.Infrastructure;
 using Gateway.Usage;
 using Microsoft.Extensions.Configuration;
 

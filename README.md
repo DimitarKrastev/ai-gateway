@@ -271,7 +271,10 @@ tool calls, latency/TTFB, output tokens/second, active and concurrent agents/req
 per-request log.
 
 Notes:
-- **Cost** uses a built-in table of public API list prices (USD per million tokens, longest model-prefix match). For
+- **Cost** uses a built-in table of public API list prices (USD per million tokens, longest model-prefix match; Anthropic
+  cache writes at the 5-minute rate, or 2x input for those reported with the 1-hour TTL). When the effective table changes
+  (a corrected price, or a `Gateway__Pricing__…` override), stored costs are recomputed from the recorded tokens at the
+  next start. For
   subscription accounts it is the *API-equivalent* cost. Prices are approximations; override per model prefix with
   `Gateway__Pricing__<prefix>__{Input,Output,CacheRead,CacheWrite}` (or `Gateway:Pricing` in appsettings). Current
   table: `GET /api/analytics/pricing`.
@@ -311,7 +314,8 @@ Notes:
   breakdown follow the same window. Live views place each request at the second it completed (when its cost and tokens
   are known); the Overview's throughput panel is the token-by-token view. Hover a live chart for a readout of every
   series at that moment.
-- **Context window (in use)** shows, at every moment, the context each agent instance is holding: the context of its
+- **Context window (in use)** is drawn as overlapping areas from zero (each group's own area, largest behind; choose
+  *Stacked* for the total). It shows, at every moment, the context each agent instance is holding: the context of its
   latest request, kept until its next request or 60 s after its last response. Grouped by model, account, session,
   agent instance, etc., each group is the sum of its agents, so the stacked areas show how context grows in real time. Timeseries queries are limited to 20,000 buckets.
   For second-level detail pick the **5m** or **15m** range (auto bucket 5 s; **1h** gets 15 s) or a 5s/15s/30s bucket on
