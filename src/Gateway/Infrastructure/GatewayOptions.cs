@@ -24,10 +24,7 @@ public sealed class GatewayOptions
 
         var port = int.TryParse(Get("Port", "GATEWAY_PORT"), out var p) ? p : 6200;
         var dataDir = Path.GetFullPath(Get("DataDir", "GATEWAY_DATA_DIR") ?? "data");
-        var webRoot = Get("WebRoot", "GATEWAY_WEB_ROOT")
-            ?? (Directory.Exists(Path.Combine(contentRoot, "wwwroot"))
-                ? Path.Combine(contentRoot, "wwwroot")
-                : Path.Combine(AppContext.BaseDirectory, "wwwroot"));
+        var webRoot = Get("WebRoot", "GATEWAY_WEB_ROOT") ?? DefaultWebRoot(contentRoot);
 
         return new GatewayOptions
         {
@@ -47,6 +44,16 @@ public sealed class GatewayOptions
                 OpenAIAuth = Url(Get("Upstreams:OpenAIAuth", "GATEWAY_UPSTREAM_OPENAI_AUTH"), UpstreamOptions.Defaults.OpenAIAuth),
             },
         };
+    }
+
+    /// <summary>
+    /// The built UI next to the app (build and publish output both contain <c>wwwroot</c>), so the gateway serves it
+    /// whatever the working directory; falls back to the content root's <c>wwwroot</c>.
+    /// </summary>
+    internal static string DefaultWebRoot(string contentRoot)
+    {
+        var besideApp = Path.Combine(AppContext.BaseDirectory, "wwwroot");
+        return File.Exists(Path.Combine(besideApp, "index.html")) ? besideApp : Path.Combine(contentRoot, "wwwroot");
     }
 
     private static string Url(string? value, string fallback) => (value ?? fallback).TrimEnd('/');

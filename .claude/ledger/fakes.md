@@ -38,7 +38,7 @@ One app hosts both fakes on one base URL; paths don't overlap. Point every upstr
 OAuth accounts: Anthropic `five_hour`(300 min, +2%/request), `seven_day`(10080, +0.5%), `seven_day_opus`(10080, +0.25%); OpenAI `primary`(300, +2%), `secondary`(10080, +0.5%). Two resets (expire in 3 and 10 days). API keys: 4000 req/min, 2M tokens/min.
 
 ## Prompt triggers (last user text)
-`[[tool:NAME]]`, `[[tools:N]]`, `[[no-tool]]`, `[[error:CODE]]`, `[[slow:MS]]`, `[[out:N]]`. Default: tools offered and last message is not a tool result → call first tool; else text.
+`[[tool:NAME]]`, `[[tools:N]]`, `[[no-tool]]`, `[[error:CODE]]`, `[[slow:MS]]` (delay before **each** SSE event, so a stream takes ~events × MS; ignored for non-streaming), `[[out:N]]`. Default: tools offered and last message is not a tool result → call first tool; else text.
 
 ## Control API `/fake-admin`
 `GET|POST /{provider}/accounts` (body FakeAccountSpec: id, kind api_key|oauth, apiKey, accessToken, refreshToken, accessTokenExpiresAt, chatGptAccountId, planType, windows[{name, utilization, windowMinutes, resetsAt, incrementPerRequest}], resets[{id, expiresAt}], replaceResets, requestsLimit, tokensLimit, exhausted); `GET|PATCH /{provider}/accounts/{id}`; `POST /{provider}/accounts/{id}/expire-token`; `GET /{provider}/requests?path=&accountId=&sinceSeq=` (headers lower-cased, raw body, accountId, statusCode); `DELETE /{provider}/requests`; `POST /{provider}/reset`; `POST /reset`.

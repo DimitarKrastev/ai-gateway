@@ -30,11 +30,11 @@
     <Exec Command="npm run build" WorkingDirectory="$(WebDir)" />
   </Target>
 
-  <!-- Files produced during this build did not exist at evaluation time; add them so publish copies them. -->
+  <!-- Files produced during this build did not exist at evaluation time; add them so build and publish copy them. -->
   <Target Name="IncludeWebAssets" AfterTargets="BuildWeb" BeforeTargets="AssignTargetPaths">
     <ItemGroup>
       <Content Remove="wwwroot/**" />
-      <Content Include="wwwroot/**" CopyToPublishDirectory="PreserveNewest" />
+      <Content Include="wwwroot/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     </ItemGroup>
   </Target>
 
