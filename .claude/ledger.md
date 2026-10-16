@@ -7,3 +7,11 @@
 - **Interface changes:** `GatewayOptions` (Port, BindAddress, DataDir, WebRoot, AdminPassword; `Gateway:*` config → env → default). `Database` singleton: `Open()`, `Migrate()`, append to `Database.Migrations` (v1 = `settings` table), `Get/SetSetting`. `UseApiLoginRequirement` gates all `/api/*` except health and auth (allowlist in `AuthEndpoints.AnonymousApiPaths`). SPA fallback excludes `/api`, `/anthropic`, `/openai`.
 - **Follow-ups:** README sections marked "To be completed". `Gateway.Fakes` is a placeholder Program.
 - **Learnings:** Runtime installed is 10.0.3 — pin Microsoft.* packages to 10.0.3. Tests: `GatewayFactory` (temp DataDir, `AdminPassword`, `CreateLoggedInClientAsync()`).
+
+## Item 2 — Fake providers
+- **Status:** done
+- **Evidence:** `dotnet build` (full, incl. web) succeeded; `dotnet test` 19/19 passed (13 new in `FakeProvidersTests`); standalone run on 6219: SSE stream + admin API via curl OK, port outside AUX_PORTS rejected (exit 1), process stopped. Commit d2c1d8d.
+- **Decisions:** One app hosts both fakes (paths disjoint; `/v1/models` dispatched by `anthropic-version`/`x-api-key`). Tests use in-memory TestServer (no ports). Explicit `Main` in Fakes — .NET 10 makes top-level `Program` public and it clashed with the gateway's. Removed Fakes `appsettings.json`. Rate-limit headers report post-request state.
+- **Interface changes:** `FakeProviderServer.StartInMemoryAsync/StartAsync(port)`, `.CreateHandler()`, `.BaseUrl`, `.Anthropic/.OpenAI` (`FakeProviderState`). Reset credits: `GET /api/oauth/usage/resets`, `POST …/{id}/redeem` (Anthropic); `GET /backend-api/wham/resets`, `POST …/{id}/redeem` (ChatGPT). Full reference: `.claude/ledger/fakes.md`.
+- **Follow-ups:** The gateway needs configurable base URLs: Anthropic API, Anthropic token, OpenAI API, ChatGPT backend, OpenAI token, plus an injectable upstream `HttpMessageHandler` for tests. Anthropic `message_delta` usage is cumulative.
+- **Learnings:** Tests reference `Gateway.Fakes`. Prompt triggers `[[tool:X]]`, `[[tools:N]]`, `[[no-tool]]`, `[[error:CODE]]`, `[[slow:MS]]`, `[[out:N]]`. AutoRegister (default on) creates accounts for unknown credentials.
