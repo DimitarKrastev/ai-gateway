@@ -2,7 +2,8 @@
 
 A self-hosted gateway for AI coding agents (Claude Code and OpenAI Codex). The agents point at the gateway instead of
 their provider and keep working as before. The gateway forwards each request through one of your **linked accounts**
-(Claude / ChatGPT subscriptions and API keys), keeps every agent session on the same account so the provider's prompt
+(Claude / ChatGPT subscriptions and API keys), can let Claude Code use OpenAI models (translating Anthropic Messages
+↔ OpenAI Responses), keeps every agent session on the same account so the provider's prompt
 cache keeps working, tracks each account's limits and reset credits, can route to maximize subscription utilization,
 and records every request for analytics (cost, tokens, cache, context size, tool calls, agents, concurrency…).
 
@@ -18,6 +19,7 @@ and records every request for analytics (cost, tokens, cache, context size, tool
 - [Linking accounts](#linking-accounts)
 - [Connecting Claude Code](#connecting-claude-code)
 - [Connecting Codex](#connecting-codex)
+- [Using OpenAI models from Claude Code](#using-openai-models-from-claude-code)
 - [Routing, limits and resets](#routing-limits-and-resets)
 - [Analytics](#analytics)
 - [End-to-end run against fakes](#end-to-end-run-against-fakes)
@@ -139,6 +141,90 @@ ChatGPT Codex backend (`chatgpt.com/backend-api/codex/responses`, with `chatgpt-
 subscription — so one Codex config uses both kinds of account. `/openai/v1/chat/completions` and `/openai/v1/models`
 are proxied as well.
 
+## Using OpenAI models from Claude Code
+
+The gateway can serve OpenAI models to Claude Code. Claude Code keeps speaking the Anthropic Messages API; for an
+*exposed* OpenAI model the gateway translates the request to the OpenAI Responses API, sends it through one of your
+linked OpenAI accounts (ChatGPT subscription via the Codex backend, or an OpenAI API key via `api.openai.com`) and
+translates the answer (streaming or not) back into an Anthropic response.
+
+**Choose the models** in the UI under **OpenAI models**:
+- **Refresh** lists the models your enabled OpenAI accounts offer: `GET /v1/models` for API keys (chat/reasoning models
+  only; embeddings, audio, image, moderation models and dated snapshots are filtered out) and the Codex backend's model
+  list for ChatGPT accounts (with the reasoning efforts each model supports). Per-account errors are shown. Models can
+  also be **added manually** by id when a list is unavailable.
+- Tick **Expose** for each model Claude Code should see and **Save**. Each exposed model has an *advertised id* (default
+  `anthropic-openai-<model>`, e.g. `anthropic-openai-gpt-5-codex`) and a display name, both editable. The advertised id
+  must contain `claude` or `anthropic` (Claude Code's discovery keeps only ids matching `/(claude|anthropic)/i`), may
+  only use `A-Z a-z 0-9 . _ : -`, and must be unique.
+- `GET /anthropic/v1/models` (client key) returns the exposed models followed by the real Claude models (fetched
+  through an Anthropic account when one is linked).
+
+**Client setup** (the UI shows these snippets with your gateway URL). Gateway model discovery, recommended:
+
+```sh
+export ANTHROPIC_BASE_URL="http://127.0.0.1:6200/anthropic"
+export ANTHROPIC_AUTH_TOKEN="aigw_…"                     # gateway client key
+export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
+claude                                                    # then pick the model in /model (or: claude --model anthropic-openai-gpt-5-codex)
+```
+
+or in `~/.claude/settings.json`:
+
+```json
+{ "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:6200/anthropic",
+    "ANTHROPIC_AUTH_TOKEN": "aigw_…",
+    "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1" } }
+```
+
+Alternative without discovery — one extra picker entry (not subject to the id filter, but the gateway still only
+bridges exposed advertised ids):
+
+```sh
+export ANTHROPIC_CUSTOM_MODEL_OPTION="anthropic-openai-gpt-5-codex"
+export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="GPT-5 Codex (OpenAI)"
+export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="OpenAI via the AI Coding Gateway"
+```
+
+Claude Code also makes background calls (titles, summaries) with its small model. If no Anthropic account is linked,
+point those at an exposed model too: `ANTHROPIC_DEFAULT_HAIKU_MODEL` (and, for older versions,
+`ANTHROPIC_SMALL_FAST_MODEL`) = an advertised id.
+
+**Routing and analytics.** A bridged request uses the same client keys, Claude Code session id and account selector as
+other traffic, with provider `openai`: the session sticks to one OpenAI account (the session id is also sent as
+`prompt_cache_key` so OpenAI's prompt cache is reused), only accounts that listed the model are used (any OpenAI account
+for manual models), 429s fail over to another account, and limits are read from the upstream headers. Requests are
+recorded as OpenAI traffic with the **actual OpenAI model** in *model* and the **advertised id** in *requested model*
+(request log: "gpt-5-codex via anthropic-openai-gpt-5-codex"; Analytics can group/filter by requested model).
+Tokens (incl. cached and reasoning), output speed, speed mode and tool calls come from the OpenAI stream; agent roles
+and per-agent series use the Claude Code request, so they work as for Claude models.
+
+**How it translates.** System prompt → `instructions`; text, images (`input_image`) and PDFs/documents (`input_file`)
+→ input messages; `tool_use`/`tool_result` → `function_call`/`function_call_output` (tool results with images keep
+them); tools → function tools, `tool_choice` and `disable_parallel_tool_use` mapped; extended thinking/effort →
+`reasoning.effort` (`output_config.effort` low/medium/high/max → low/medium/high/xhigh; otherwise budget ≤4k low,
+≤16k medium, else high; clamped to the efforts the model supports) and `reasoning.summary`; `speed: "fast"` →
+`service_tier: "priority"`. Back: reasoning → `thinking` blocks, text → `text`, function calls → `tool_use` with
+incremental `input_json_delta`, stop reasons (`tool_use`, `max_tokens`, `refusal`, `end_turn`), usage (`input_tokens`
+excludes cached tokens, which are reported as `cache_read_input_tokens`; output includes reasoning). Upstream errors
+come back as Anthropic errors (`{"type":"error","error":{…}}`, status kept), mid-stream failures as an SSE `error` event.
+
+**Limitations** (what cannot be translated faithfully):
+- Anthropic server tools (web search, web fetch, code execution) are dropped; Claude Code's WebSearch/WebFetch tools do
+  not work on bridged models. Tool names OpenAI rejects are shortened and mapped back transparently.
+- `count_tokens` for bridged models is a local estimate (~4 characters per token); no provider is called.
+- `cache_control` markers are ignored (OpenAI caches prompt prefixes automatically); `cache_creation_input_tokens` is 0.
+- `temperature`, `top_p`, `top_k`, `stop_sequences`, `context_management` and `anthropic-beta` features are dropped.
+- Thinking is shown as OpenAI's reasoning *summary*, not the full reasoning. The encrypted reasoning travels in the
+  thinking block's `signature` (`bridge1:…`), so it round-trips only for thinking produced by the bridge; thinking from a
+  real Claude model in the same conversation is dropped when switching to an OpenAI model.
+- ChatGPT (Codex backend) requests are always streamed upstream (non-streaming clients get the aggregated message), use
+  `store: false`, always carry `instructions` and never `max_output_tokens`, so `max_tokens` is not enforced there; API
+  key requests send `max_tokens` as `max_output_tokens`. Requests to the Codex backend carry Codex-style headers
+  (`originator: codex_cli_rs`, `session_id`).
+- Images/files referenced by Anthropic file ids cannot be forwarded; base64 and URL sources can.
+
 ## Routing, limits and resets
 
 **Sticky sessions.** The session id comes from Claude Code's `metadata.user_id` (`…_session_<uuid>`) or the
@@ -199,6 +285,8 @@ Notes:
   client-sent `x-claude-code-agent-id` header, when present, identifies a Claude Code agent instance directly; a Codex
   `prompt_cache_key` that differs from the session id marks a separate thread.
 - `count_tokens` and `models` calls are logged as requests with zero tokens and no session/agent.
+- Claude Code requests for exposed OpenAI models are counted as OpenAI traffic: *model* is the OpenAI model actually
+  used, *requested model* the advertised id (see [Using OpenAI models from Claude Code](#using-openai-models-from-claude-code)).
 - Requests the gateway retried on another account after a 429 are shown in the request log but excluded from totals.
 
 ## End-to-end run against fakes
@@ -215,6 +303,9 @@ gateway (temporary data dir, all upstreams → fakes), links all four account ki
   a utility call, `count_tokens`, streaming and non-streaming, prompt caching;
 - Codex: `codex_cli_rs` headers, Responses API streaming with `shell` function calls and outputs, through the OpenAI API
   key and through the ChatGPT subscription;
+- Claude Code on exposed OpenAI models: catalog refresh, exposure, `/v1/models` discovery, a bridged session with
+  thinking, Task subagent, tool results, utility and `count_tokens` through ChatGPT and the OpenAI API key, validating
+  every returned Anthropic stream;
 - concurrent agents; maximize mode moving a session, failover on exhaustion and automatic use of the reset closest to
   expiring; a manual reset.
 
@@ -261,6 +352,8 @@ Codex ───────┘  /openai/*                     └─ api.openai.
                     ├─ UsageObserver  → requests table (tokens, cost, tools, agents)
                     └─ LimitsObserver → account limits / exhaustion
    UI (React) ── /api/* (cookie auth): accounts, client keys, limits, resets, settings, analytics, routing events
+
+   /anthropic/v1/messages for an exposed OpenAI model: Anthropic → Responses translation → OpenAI account → translated back
 ```
 
 - `src/Gateway/Proxy` — transparent streaming proxy, client keys, session identification, OAuth token refresh.
@@ -268,6 +361,8 @@ Codex ───────┘  /openai/*                     └─ api.openai.
 - `src/Gateway/Routing` — `PolicyAccountSelector` (sticky / maximize / reset use), routing events, settings.
 - `src/Gateway/Limits` — header parsing, usage-endpoint polling, reset credits.
 - `src/Gateway/Usage` — incremental SSE/JSON usage parsing, pricing, agent identification, analytics queries.
+- `src/Gateway/Bridge` — OpenAI model catalog/selection, `/anthropic/v1/models` merge, Anthropic Messages ↔ OpenAI
+  Responses translation (requests, JSON, SSE, errors, token estimate) for exposed models.
 - `src/Gateway/Infrastructure` — options, SQLite with append-only migrations.
 
 ## Assumptions
@@ -284,3 +379,6 @@ Codex ───────┘  /openai/*                     └─ api.openai.
   (`anthropic-ratelimit-unified-*`, `/api/oauth/usage`, `x-codex-*`, `/backend-api/wham/usage`); unknown fields are ignored.
 - Costs are API list-price approximations; agent roles are heuristics (see [Analytics](#analytics)).
 - The gateway asks providers for uncompressed responses so usage can be read from the stream as it passes.
+- The ChatGPT Codex backend's request rules (streaming only, `store: false`, `instructions` required, no
+  `max_output_tokens`/`temperature`) and its model list (`/backend-api/codex/models?client_version=…`) follow what the
+  Codex CLI does today; the fakes enforce them.
