@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Gateway\Gateway.csproj" />
+    <ProjectReference Include="..\..\src\Gateway.Fakes\Gateway.Fakes.csproj" />
   </ItemGroup>
 
 </Project>
