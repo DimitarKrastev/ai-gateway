@@ -94,6 +94,8 @@ export default function Analytics() {
   const anchor = Math.floor(useNow(10_000) / 10_000) * 10_000
   const { from, to } = live.on ? { from: anchor - liveMs - 10_000, to: anchor + 20_000 } : range
   const lt = live.on ? (['usage'] as LiveTopic[]) : undefined
+  // Live views place a request when it completes (its cost and tokens are known then), so long requests show up now.
+  const timeBasis = live.on ? 'completed' : undefined
   const [metric, setMetric] = useState('cost')
   const [groupBy, setGroupBy] = useState('model')
   const [bucket, setBucket] = useState('auto')
@@ -103,7 +105,7 @@ export default function Analytics() {
   const [tpsStat, setTpsStat] = useState<TpsStat>('tokensPerSecond')
   const [f, setF] = useState<Filters>(NO_FILTERS)
 
-  const base = { from, to, ...f }
+  const base = { from, to, timeBasis, ...f }
   const def = metricDef(metric)
   const mode = chartMode === 'auto' ? (def.kind === 'sum' ? 'stack' : 'line') : chartMode
   // "Agent (each instance)" plots every request of every agent; metrics without a per-request value fall back to buckets.
@@ -111,9 +113,9 @@ export default function Analytics() {
 
   const accounts = useApi<Account[]>('/api/accounts', undefined, ['accounts'])
   const bucketQ = live.on ? '1s' : bucket
-  const models = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, by: 'model', limit: 100 })}`, undefined, lt)
-  const agents = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, by: 'agent', limit: 100 })}`, undefined, lt)
-  const modes = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, by: 'speedMode', limit: 20 })}`, undefined, lt)
+  const models = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, timeBasis, by: 'model', limit: 100 })}`, undefined, lt)
+  const agents = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, timeBasis, by: 'agent', limit: 100 })}`, undefined, lt)
+  const modes = useApi<{ rows: BreakdownRow[] }>(`/api/analytics/breakdown${qs({ from, to, timeBasis, by: 'speedMode', limit: 20 })}`, undefined, lt)
   const summary = useApi<Summary>(`/api/analytics/summary${qs(base)}`, undefined, lt)
   const ts = useApi<Timeseries>(
     perAgent ? null : `/api/analytics/timeseries${qs({ ...base, metric, groupBy, bucket: bucketQ, limit: 8 })}`,

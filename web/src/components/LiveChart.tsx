@@ -128,10 +128,27 @@ export default function LiveChart({
     return { builtAt: now, k, top, paths }
   }, [visible, bucketMs, mode, windowMs, width, now, plotH])
 
+  // Hover readout: the time under the cursor moves as the chart scrolls, so it is recomputed every frame and the readout
+  // re-renders only when it lands in another bucket (or, per request, every quarter second).
+  const hoverX = useRef<number | null>(null)
+  const [hover, setHover] = useState<{ x: number; t: number } | null>(null)
+  const hoverKey = useRef<number | null>(null)
+
   // Offset applied before paint, then every frame (see LiveThroughput for why it must not wait for a normal effect).
   const groupRef = useRef<SVGGElement>(null)
   useLayoutEffect(() => {
-    const apply = () => groupRef.current?.setAttribute('transform', `translate(${(-(Date.now() - skew - build.builtAt) * build.k).toFixed(2)},0)`)
+    const apply = () => {
+      const serverNow = Date.now() - skew
+      groupRef.current?.setAttribute('transform', `translate(${(-(serverNow - build.builtAt) * build.k).toFixed(2)},0)`)
+      const x = hoverX.current
+      if (x === null || build.k === 0) return
+      const t = serverNow - DELAY_MS - windowMs + x / build.k
+      const key = bucketMs !== null ? Math.floor(t / bucketMs) : Math.floor(t / 250)
+      if (key !== hoverKey.current) {
+        hoverKey.current = key
+        setHover({ x, t })
+      }
+    }
     apply()
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
     let raf = 0
@@ -141,7 +158,44 @@ export default function LiveChart({
     }
     raf = requestAnimationFrame(frame)
     return () => cancelAnimationFrame(raf)
-  }, [build, skew])
+  }, [build, skew, bucketMs, windowMs])
+
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const x = e.clientX - e.currentTarget.getBoundingClientRect().left
+    hoverX.current = x
+    hoverKey.current = null
+    // The next frame computes the time; until then keep the readout where the cursor is.
+    setHover((h) => (h ? { ...h, x } : h))
+  }
+  const onLeave = () => {
+    hoverX.current = null
+    hoverKey.current = null
+    setHover(null)
+  }
+
+  /** Value of a series at time t: its bucket (bucketed) or its latest request still held (per request). */
+  const valueAt = (s: LiveSeries, t: number): number | null => {
+    if (bucketMs !== null) {
+      const b = Math.floor(t / bucketMs) * bucketMs
+      const p = s.points.find(([pt]) => pt === b)
+      return p ? p[1] : mode === 'stack' ? 0 : null
+    }
+    let held: number | null = null
+    for (let i = 0; i < s.points.length; i++) {
+      const [pt, v] = s.points[i]
+      if (pt > t) break
+      const end = i + 1 < s.points.length ? s.points[i + 1][0] : pt + IDLE_MS
+      held = t < end ? v : null
+    }
+    return held
+  }
+  const readout = hover
+    ? visible
+        .map((s) => ({ s, v: valueAt(s, hover.t) }))
+        .filter((r) => r.v !== null && (mode !== 'stack' || r.v !== 0))
+        .sort((a, b) => (b.v ?? 0) - (a.v ?? 0))
+    : []
+  const readoutTotal = mode === 'stack' ? readout.reduce((sum, r) => sum + (r.v ?? 0), 0) : null
 
   // Legend values: the latest bucket (bucketed) or each series' latest request (per request).
   const latest = (s: LiveSeries) => {
@@ -164,7 +218,7 @@ export default function LiveChart({
     <div className="live-chart">
       <div ref={boxRef} className="live-chart-plot" style={{ height }}>
         {width > 0 && (
-          <svg width={width} height={height} role="img" aria-label="Live chart">
+          <svg width={width} height={height} role="img" aria-label="Live chart" onMouseMove={onMove} onMouseLeave={onLeave}>
             <defs>
               <clipPath id={clipId}>
                 <rect x={0} y={0} width={width} height={height} />
@@ -187,12 +241,42 @@ export default function LiveChart({
             <text className="tp-max" x={4} y={12}>
               {axisFormat(build.top)}
             </text>
+            {hover && <line className="live-cursor" x1={hover.x} x2={hover.x} y1={0} y2={plotH} />}
             {empty && (
               <text className="live-chart-empty" x={width / 2} y={height / 2} textAnchor="middle">
                 {emptyText}
               </text>
             )}
           </svg>
+        )}
+        {hover && (
+          <div
+            className="live-readout"
+            style={hover.x > width - 240 ? { right: width - hover.x + 12 } : { left: hover.x + 12 }}
+            role="status"
+          >
+            <div className="when">{new Date(hover.t + skew).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
+            {readout.length === 0 ? (
+              <div className="muted">No activity</div>
+            ) : (
+              <>
+                {readout.slice(0, 12).map(({ s, v }) => (
+                  <div key={s.key} className="row">
+                    <span className="swatch" style={{ background: s.color }} aria-hidden="true" />
+                    <span className="name">{s.label}</span>
+                    <span className="value">{format(v ?? 0)}</span>
+                  </div>
+                ))}
+                {readout.length > 12 && <div className="muted">+{readout.length - 12} more</div>}
+                {readoutTotal !== null && readout.length > 1 && (
+                  <div className="row total">
+                    <span className="name">Total</span>
+                    <span className="value">{format(readoutTotal)}</span>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         )}
       </div>
       <div className="tp-axis-labels muted">

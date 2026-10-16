@@ -5,15 +5,19 @@ using Microsoft.Data.Sqlite;
 namespace Gateway.Usage;
 
 /// <summary>
-/// Filters shared by all analytics queries. Time range is [From, To) in unix ms on request start. Every other value equals
+/// Filters shared by all analytics queries. Time range is [From, To) in unix ms on request start, or on request completion
+/// with <see cref="ByCompletion"/> (live views: a request's cost and tokens are known when it ends). Every other value equals
 /// the corresponding breakdown key, so a breakdown row can be clicked into a filter. Gateway-retried attempts (429
 /// failovers the client never saw) are excluded unless <see cref="IncludeRetried"/>.
 /// </summary>
 public sealed record AnalyticsFilter(
     long From, long To, string? Provider = null, long? AccountId = null, string? SessionId = null, string? Agent = null,
     string? AgentId = null, string? Model = null, string? Client = null, bool IncludeRetried = false, string? SpeedMode = null,
-    string? RequestedModel = null)
+    string? RequestedModel = null, bool ByCompletion = false)
 {
+    /// <summary>The time a request is placed at: its start, or its completion with <see cref="ByCompletion"/>.</summary>
+    public string TimeColumn(string p = "") => p + (ByCompletion ? "completed_at" : "started_at");
+
     public static AnalyticsFilter FromQuery(IQueryCollection q, DateTimeOffset now)
     {
         var to = ParseTime(q["to"]) ?? now.ToUnixTimeMilliseconds();
@@ -21,7 +25,7 @@ public sealed record AnalyticsFilter(
         string? S(string k) => string.IsNullOrWhiteSpace(q[k]) ? null : q[k].ToString();
         return new AnalyticsFilter(from, Math.Max(to, from + 1), S("provider"),
             long.TryParse(q["accountId"], out var a) ? a : null, S("sessionId"), S("agent"), S("agentId"), S("model"), S("client"),
-            q["includeRetried"] == "true", S("speedMode"), S("requestedModel"));
+            q["includeRetried"] == "true", S("speedMode"), S("requestedModel"), q["timeBasis"] == "completed");
     }
 
     public static long? ParseTime(string? s)
@@ -37,7 +41,7 @@ public sealed record AnalyticsFilter(
         var p = alias.Length > 0 ? alias + "." : "";
         var parts = new List<string>
         {
-            overlap ? $"{p}started_at < $to AND {p}completed_at >= $from" : $"{p}started_at >= $from AND {p}started_at < $to",
+            overlap ? $"{p}started_at < $to AND {p}completed_at >= $from" : $"{TimeColumn(p)} >= $from AND {TimeColumn(p)} < $to",
         };
         cmd.Parameters.AddWithValue("$from", From);
         cmd.Parameters.AddWithValue("$to", To);
@@ -98,7 +102,7 @@ public sealed record AgentSeriesResult(
 /// <summary>Read side of usage analytics. Response shapes are documented in .claude/ledger/analytics.md.</summary>
 public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvider time)
 {
-    private enum Agg { Sum, Avg, Max, Distinct, Concurrency, Percentile }
+    private enum Agg { Sum, Avg, Max, Distinct, Concurrency, Percentile, Held }
 
     private static readonly Dictionary<string, (string Sql, Agg Kind)> MetricSql = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -124,6 +128,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         ["activeSessions"] = ("COUNT(DISTINCT session_id)", Agg.Distinct),
         ["concurrentRequests"] = ("", Agg.Concurrency),
         ["concurrentAgents"] = ("", Agg.Concurrency),
+        ["contextWindow"] = ("", Agg.Held),
     };
 
     public static IReadOnlyCollection<string> MetricNames => MetricSql.Keys;
@@ -219,6 +224,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
             {
                 Agg.Concurrency => Concurrency(f, groupBy, metric == "concurrentAgents", start, bucket.Ms, count),
                 Agg.Percentile => Percentiles(f, groupBy, sql, Quantile(metric), start, bucket.Ms, count, out percentileTotals),
+                Agg.Held => ContextWindow(f, groupBy, start, bucket.Ms, count),
                 _ => Aggregate(f, groupBy, sql, start, bucket.Ms, count),
             };
 
@@ -268,7 +274,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         using var cmd = conn.CreateCommand();
         var where = f.Where(cmd);
         cmd.CommandText = $"""
-            SELECT (started_at - $start) / $bucket AS b, {GroupSql(groupBy)} AS g, {metricSql} AS v
+            SELECT ({f.TimeColumn()} - $start) / $bucket AS b, {GroupSql(groupBy)} AS g, {metricSql} AS v
             FROM requests WHERE {where} GROUP BY b, g;
             """;
         cmd.Parameters.AddWithValue("$start", start);
@@ -298,7 +304,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         {
             var where = f.Where(cmd);
             cmd.CommandText = $"""
-                SELECT (started_at - $start) / $bucket AS b, {GroupSql(groupBy)} AS g, {valueSql} AS v
+                SELECT ({f.TimeColumn()} - $start) / $bucket AS b, {GroupSql(groupBy)} AS g, {valueSql} AS v
                 FROM requests WHERE {where} AND {valueSql} IS NOT NULL;
                 """;
             cmd.Parameters.AddWithValue("$start", start);
@@ -329,7 +335,7 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
     private double Total(double?[] values, Agg kind, AnalyticsFilter f, string metricSql, string groupBy, string group) => kind switch
     {
         Agg.Sum => values.Sum(v => v ?? 0),
-        Agg.Max or Agg.Concurrency => values.Max(v => v ?? 0),
+        Agg.Max or Agg.Concurrency or Agg.Held => values.Max(v => v ?? 0),
         _ => ScalarForGroup(f, metricSql, groupBy, group),
     };
 
@@ -348,6 +354,73 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
     /// Peak number of simultaneously in-flight requests (or distinct agents with an in-flight request) per bucket,
     /// from request start/end intervals plus requests still in flight.
     /// </summary>
+    /// <summary>An agent's context window counts until its next request, or this long after its last response.</summary>
+    public const long ContextIdleMs = 60_000;
+
+    /// <summary>
+    /// Context window in use: at any moment each agent instance holds the context of its latest request (from that request's
+    /// start until its next request, or <see cref="ContextIdleMs"/> after the response); a group's value is the sum over its
+    /// agents. Per bucket: the peak of that sum (at 1 s resolution, effectively the value at that second).
+    /// </summary>
+    private Dictionary<string, double?[]> ContextWindow(AnalyticsFilter f, string groupBy, long start, long bucketMs, int count)
+    {
+        // Requests that began before the range can still be held inside it.
+        var scope = f with { From = f.From - ContextIdleMs - 3_600_000, ByCompletion = false };
+        var perAgent = new Dictionary<string, List<(long Start, long End, string Group, long Ctx)>>();
+        using (var conn = db.Open())
+        using (var cmd = conn.CreateCommand())
+        {
+            var where = scope.Where(cmd);
+            cmd.CommandText = $"""
+                SELECT session_id || '|' || agent_id, started_at, completed_at, {GroupSql(groupBy)}, context_tokens
+                FROM requests WHERE {where} AND agent_id IS NOT NULL AND context_tokens > 0 ORDER BY started_at, id;
+                """;
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var key = r.IsDBNull(0) ? "" : r.GetString(0);
+                if (!perAgent.TryGetValue(key, out var list)) perAgent[key] = list = new();
+                list.Add((r.GetInt64(1), r.GetInt64(2), r.IsDBNull(3) ? "" : r.GetString(3), r.GetInt64(4)));
+            }
+        }
+
+        // Held segments become +ctx/-ctx events per group.
+        var events = new Dictionary<string, List<(long T, long Delta)>>();
+        foreach (var list in perAgent.Values)
+            for (var i = 0; i < list.Count; i++)
+            {
+                var (s, e, g, ctx) = list[i];
+                var end = Math.Max(s + 1, i + 1 < list.Count ? Math.Min(list[i + 1].Start, e + ContextIdleMs) : e + ContextIdleMs);
+                if (!events.TryGetValue(g, out var ev)) events[g] = ev = new();
+                ev.Add((s, ctx));
+                ev.Add((end, -ctx));
+            }
+
+        var result = new Dictionary<string, double?[]>();
+        foreach (var (group, ev) in events)
+        {
+            ev.Sort((a, b) => a.T != b.T ? a.T.CompareTo(b.T) : a.Delta.CompareTo(b.Delta));
+            var values = new double?[count];
+            long current = 0;
+            var j = 0;
+            for (var b = 0; b < count; b++)
+            {
+                var bStart = start + b * bucketMs;
+                var bEnd = bStart + bucketMs;
+                while (j < ev.Count && ev[j].T <= bStart) current += ev[j++].Delta;
+                var peak = current;
+                while (j < ev.Count && ev[j].T < bEnd)
+                {
+                    current += ev[j++].Delta;
+                    peak = Math.Max(peak, current);
+                }
+                if (peak > 0) values[b] = peak;
+            }
+            if (values.Any(v => v is not null)) result[group] = values;
+        }
+        return result;
+    }
+
     private Dictionary<string, double?[]> Concurrency(AnalyticsFilter f, string groupBy, bool agents, long start, long bucketMs, int count)
     {
         var intervals = Intervals(f, groupBy);
@@ -720,8 +793,8 @@ public sealed class AnalyticsService(Database db, LiveRequests live, TimeProvide
         {
             var where = f.Where(cmd);
             cmd.CommandText = $"""
-                SELECT agent_id, session_id, agent_role, client, started_at, {valueSql} AS v
-                FROM requests WHERE {where} AND agent_id IS NOT NULL ORDER BY started_at, id;
+                SELECT agent_id, session_id, agent_role, client, {f.TimeColumn()}, {valueSql} AS v
+                FROM requests WHERE {where} AND agent_id IS NOT NULL ORDER BY {f.TimeColumn()}, id;
                 """;
             using var r = cmd.ExecuteReader();
             while (r.Read())

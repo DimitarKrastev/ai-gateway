@@ -308,8 +308,12 @@ Notes:
   corrected seconds are pushed again. It is kept in memory only (`GET /api/analytics/meter`).
   The **Analytics** page has a **Live** checkbox: every chart (any metric, any grouping, including one line per agent
   instance) then scrolls in real time at one-second resolution over the last 1, 5 or 10 minutes, and the KPIs and
-  breakdown follow the same window. These values come from completed requests (a long request appears when it ends);
-  the Overview's throughput panel is the token-by-token view. Timeseries queries are limited to 20,000 buckets.
+  breakdown follow the same window. Live views place each request at the second it completed (when its cost and tokens
+  are known); the Overview's throughput panel is the token-by-token view. Hover a live chart for a readout of every
+  series at that moment.
+- **Context window (in use)** shows, at every moment, the context each agent instance is holding: the context of its
+  latest request, kept until its next request or 60 s after its last response. Grouped by model, account, session,
+  agent instance, etc., each group is the sum of its agents, so the stacked areas show how context grows in real time. Timeseries queries are limited to 20,000 buckets.
   For second-level detail pick the **5m** or **15m** range (auto bucket 5 s; **1h** gets 15 s) or a 5s/15s/30s bucket on
   the Analytics page.
 

@@ -327,3 +327,12 @@ button.icon { background: none; color: var(--muted); font-size: 1.3rem; line-hei
 .live-legend button.off { opacity: 0.4; }
 .live-legend .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
 .live-legend .value { color: var(--muted); font-variant-numeric: tabular-nums; }
+.live-chart-plot { position: relative; }
+.live-cursor { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+.live-readout { position: absolute; top: 8px; z-index: 5; pointer-events: none; min-width: 180px; max-width: 320px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12); display: grid; gap: 3px; }
+.live-readout .when { color: var(--muted); font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+.live-readout .row { display: grid; grid-template-columns: 10px 1fr auto; gap: 6px; align-items: center; }
+.live-readout .row.total { grid-template-columns: 1fr auto; border-top: 1px solid var(--border); padding-top: 3px; margin-top: 2px; font-weight: 600; }
+.live-readout .swatch { width: 10px; height: 10px; border-radius: 2px; }
+.live-readout .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.live-readout .value { font-variant-numeric: tabular-nums; }

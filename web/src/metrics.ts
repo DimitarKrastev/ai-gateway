@@ -26,6 +26,9 @@ export const METRICS: MetricDef[] = [
   { key: 'totalTokens', label: 'Total tokens', kind: 'sum', format: tokens, perRequest: true },
   { key: 'contextAvg', label: 'Context size (avg)', kind: 'avg', format: tokens, perRequest: true },
   { key: 'contextMax', label: 'Context size (max)', kind: 'peak', format: tokens, perRequest: true },
+  // Each agent holds its latest request's context until its next request (or 60 s after its last response); groups sum
+  // their agents, so stacked areas show the context in use at every moment.
+  { key: 'contextWindow', label: 'Context window (in use)', kind: 'sum', format: tokens },
   { key: 'toolCalls', label: 'Tool calls', kind: 'sum', format: count, perRequest: true },
   { key: 'errors', label: 'Errors', kind: 'sum', format: count, perRequest: true },
   { key: 'latencyAvg', label: 'Latency (avg)', kind: 'avg', format: fmtMs, perRequest: true },
