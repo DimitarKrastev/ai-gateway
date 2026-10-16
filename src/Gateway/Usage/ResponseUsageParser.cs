@@ -32,11 +32,12 @@ public sealed class ResponseUsageParser
 {
     private const int MaxBufferedBytes = 16 * 1024 * 1024;
 
-    private enum Format { Sse, Json, Ignore }
+    // Unknown: no Content-Type (the ChatGPT Codex backend streams without one); decided from the first body bytes.
+    private enum Format { Sse, Json, Ignore, Unknown }
 
     private readonly string _endpoint;
     private readonly int _status;
-    private readonly Format _format;
+    private Format _format;
     private readonly MemoryStream _buffer = new();   // JSON body, or the current incomplete SSE line
     private readonly MemoryStream _data = new();     // data lines of the current SSE event
     private bool _overflow;
@@ -54,12 +55,26 @@ public sealed class ResponseUsageParser
         _endpoint = endpoint;
         _status = status;
         var ct = contentType?.ToLowerInvariant() ?? "";
-        _format = ct.Contains("text/event-stream") ? Format.Sse : ct.Contains("json") ? Format.Json : Format.Ignore;
+        _format = ct.Contains("text/event-stream") ? Format.Sse : ct.Contains("json") ? Format.Json
+            : ct.Length == 0 ? Format.Unknown : Format.Ignore;
         if (!Endpoints.IsGeneration(endpoint) && status < 400) _format = Format.Ignore;
     }
 
     public void Feed(ReadOnlySpan<byte> chunk)
     {
+        if (_format == Format.Unknown)
+        {
+            // Hold the first bytes until the format is clear, then replay them.
+            _sniffed.Write(chunk);
+            var held = _sniffed.GetBuffer().AsSpan(0, (int)_sniffed.Length);
+            _format = Sniff(held);
+            if (_format == Format.Unknown && _sniffed.Length < 64) return;
+            if (_format == Format.Unknown) _format = Format.Ignore;
+            var bytes = held.ToArray();
+            _sniffed.SetLength(0);
+            Feed(bytes);
+            return;
+        }
         if (_format == Format.Ignore || chunk.IsEmpty) return;
         if (_format == Format.Json)
         {
@@ -81,6 +96,13 @@ public sealed class ResponseUsageParser
 
     public ResponseUsage Complete()
     {
+        if (_format == Format.Unknown && _sniffed.Length > 0)
+        {
+            var held = _sniffed.GetBuffer().AsSpan(0, (int)_sniffed.Length).ToArray();
+            _format = Sniff(held) is var f && f != Format.Unknown ? f : Format.Ignore;
+            _sniffed.SetLength(0);
+            Feed(held);
+        }
         if (_format == Format.Json && !_overflow && _buffer.Length > 0)
         {
             try
@@ -98,6 +120,27 @@ public sealed class ResponseUsageParser
         if (_status >= 400 && Usage.ErrorType == null) Usage.ErrorType = $"http_{_status}";
         return Usage;
     }
+
+    /// <summary>
+    /// SSE when the body starts with an SSE field or comment, JSON when it starts with an object or array, Unknown while
+    /// the bytes seen so far are too short to tell.
+    /// </summary>
+    private static Format Sniff(ReadOnlySpan<byte> held)
+    {
+        var body = held.TrimStart(" \t\r\n"u8);
+        if (body.IsEmpty) return Format.Unknown;
+        if (body[0] is (byte)'{' or (byte)'[') return Format.Json;
+        if (body[0] == (byte)':') return Format.Sse;
+        foreach (var field in SseFields)
+        {
+            if (body.StartsWith(field)) return Format.Sse;
+            if (field.AsSpan().StartsWith(body)) return Format.Unknown;
+        }
+        return Format.Ignore;
+    }
+
+    private static readonly byte[][] SseFields = ["event:"u8.ToArray(), "data:"u8.ToArray(), "id:"u8.ToArray(), "retry:"u8.ToArray()];
+    private readonly MemoryStream _sniffed = new();
 
     private void AppendLine(ReadOnlySpan<byte> part)
     {

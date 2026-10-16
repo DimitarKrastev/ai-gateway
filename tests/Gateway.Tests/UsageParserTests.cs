@@ -6,6 +6,47 @@ namespace Gateway.Tests;
 
 public class UsageParserTests
 {
+    // The ChatGPT Codex backend streams without a Content-Type header; usage must still be read (format from the body).
+    private const string CodexBackendStream =
+        "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"model\":\"gpt-5.6-luna\",\"service_tier\":\"default\"}}\n\n" +
+        "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
+        "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-luna\",\"status\":\"completed\"," +
+        "\"service_tier\":\"default\",\"usage\":{\"input_tokens\":21,\"input_tokens_details\":{\"cached_tokens\":4,\"cache_write_tokens\":0}," +
+        "\"output_tokens\":5,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":26," +
+        "\"attribution\":{\"items\":{\"msg_1\":{\"input_tokens\":9,\"output_tokens\":0}}}}}}\n\n";
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(7)]
+    [InlineData(4096)]
+    public void Responses_stream_without_content_type_is_detected_from_the_body(int chunkSize)
+    {
+        var u = Parse(Endpoints.Responses, "", CodexBackendStream, chunkSize: chunkSize);
+        Assert.True(u.HasUsage);
+        Assert.Equal(17, u.InputTokens);
+        Assert.Equal(4, u.CacheReadTokens);
+        Assert.Equal(5, u.OutputTokens);
+        Assert.Equal("gpt-5.6-luna", u.Model);
+    }
+
+    [Fact]
+    public void Json_body_without_content_type_is_detected_from_the_body()
+    {
+        var u = Parse(Endpoints.Responses, "", """
+            {"model":"gpt-5.6-luna","status":"completed","usage":{"input_tokens":10,"output_tokens":3}}
+            """, chunkSize: 2);
+        Assert.Equal(3, u.OutputTokens);
+        Assert.Equal(10, u.InputTokens);
+    }
+
+    [Fact]
+    public void Unrecognised_body_without_content_type_is_ignored()
+    {
+        var u = Parse(Endpoints.Responses, "", "<html>bad gateway</html>");
+        Assert.False(u.HasUsage);
+    }
+
     private static ResponseUsage Parse(string endpoint, string contentType, string body, int status = 200, int chunkSize = 7)
     {
         var parser = new ResponseUsageParser(endpoint, status, contentType);
